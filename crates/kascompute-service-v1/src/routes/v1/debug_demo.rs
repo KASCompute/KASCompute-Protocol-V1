@@ -1,55 +1,52 @@
 use axum::{
-    extract::{connect_info::ConnectInfo, State},
+    extract::{ConnectInfo, State},
+    http::StatusCode,
     routing::{get, post},
     Router,
 };
 use std::net::SocketAddr;
-use axum::http::StatusCode;
 
-use crate::state::AppState;
-use crate::domain::models::DemoStatus;
-use crate::util::resp::{ok, err};
+use crate::{state::AppState, util::resp::{ok, err_status_json}};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/debug/demo/status", get(status))
-        .route("/debug/demo/start", post(start))
-        .route("/debug/demo/stop", post(stop))
+        .route("/status", get(demo_status))
+        .route("/start", post(demo_start))
+        .route("/stop", post(demo_stop))
 }
 
-
-async fn status(
+async fn demo_status(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
     if !addr.ip().is_loopback() {
-        return err("forbidden", "demo endpoints are local-only", StatusCode::FORBIDDEN);
+        return err_status_json(StatusCode::FORBIDDEN, "forbidden", "demo endpoints are localhost-only");
     }
-    let s: DemoStatus = state.demo_status().await;
-    ok(s)
+    let v = serde_json::to_value(state.demo_status().await).unwrap();
+    ok(v)
 }
 
-async fn start(
+async fn demo_start(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
     if !addr.ip().is_loopback() {
-        return err("forbidden", "demo endpoints are local-only", StatusCode::FORBIDDEN);
+        return err_status_json(StatusCode::FORBIDDEN, "forbidden", "demo endpoints are localhost-only");
     }
     state.demo_clear().await;
     state.demo_spawn(25, 300).await;
-    let s: DemoStatus = state.demo_status().await;
-    ok(s)
+    let v = serde_json::to_value(state.demo_status().await).unwrap();
+    ok(v)
 }
 
-async fn stop(
+async fn demo_stop(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
     if !addr.ip().is_loopback() {
-        return err("forbidden", "demo endpoints are local-only", StatusCode::FORBIDDEN);
+        return err_status_json(StatusCode::FORBIDDEN, "forbidden", "demo endpoints are localhost-only");
     }
     state.demo_clear().await;
-    let s: DemoStatus = state.demo_status().await;
-    ok(s)
+    let v = serde_json::to_value(state.demo_status().await).unwrap();
+    ok(v)
 }

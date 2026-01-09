@@ -248,8 +248,7 @@ impl AppState {
     // Jobs / scheduler
     // -------------------------
     pub async fn create_scheduled_job(&self, is_demo: bool) -> u64 {
-        let mut rng = rand::thread_rng();
-        let wu = rng.gen_range(500_000..=5_000_000);
+	let wu: u64 = rand::thread_rng().gen_range(500_000..=5_000_000);
         let mut s = self.inner.write().await;
         let id = s.next_job_id;
         s.next_job_id += 1;

@@ -10,7 +10,6 @@ use crate::domain::models::{HeartbeatPayload, Node};
 use crate::state::AppState;
 use crate::util::ip::client_ip_from_headers;
 use crate::util::resp::ok;
-use axum::http::StatusCode;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -18,7 +17,9 @@ pub fn router() -> Router<AppState> {
         .route("/nodes/heartbeat", post(heartbeat))
 }
 
-async fn list_nodes(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+async fn list_nodes(
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
     let nodes: Vec<Node> = state.list_nodes().await;
     ok(nodes)
 }
@@ -29,8 +30,15 @@ async fn heartbeat(
     State(state): State<AppState>,
     Json(payload): Json<HeartbeatPayload>,
 ) -> impl axum::response::IntoResponse {
-    // if behind proxy, use forwarded header
+
     let ip = client_ip_from_headers(&headers, addr.ip());
+    let _heartbeat_ts = payload.timestamp_unix;
+    let _heartbeat_sig = payload.signature_hex.as_deref();
+
+    // Persist / update node
     state.upsert_node(payload, ip).await;
-    ok(serde_json::json!({"accepted": true}))
+
+    ok(serde_json::json!({
+        "accepted": true
+    }))
 }
