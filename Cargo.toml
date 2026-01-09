@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "crates/kascompute-service-v1",
+  "crates/node-launcher-v1",
+  "crates/shared-v1"
+]
+resolver = "2"
