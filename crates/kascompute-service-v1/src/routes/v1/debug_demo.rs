@@ -1,25 +1,32 @@
 use axum::{
-    extract::{ConnectInfo, State},
-    http::StatusCode,
+    extract::State,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Router,
 };
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
-use crate::{state::AppState, util::resp::{ok, err_status_json}};
+use crate::state::AppState;
+use crate::util::ip::client_ip_from_headers;
+use crate::util::resp::{ok, err_status_json};
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    Router::<AppState>::new()
         .route("/status", get(demo_status))
         .route("/start", post(demo_start))
         .route("/stop", post(demo_stop))
 }
 
+fn is_local(headers: &HeaderMap) -> bool {
+    let ip = client_ip_from_headers(headers, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    ip.is_loopback()
+}
+
 async fn demo_status(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
-    if !addr.ip().is_loopback() {
+    if !is_local(&headers) {
         return err_status_json(StatusCode::FORBIDDEN, "forbidden", "demo endpoints are localhost-only");
     }
     let v = serde_json::to_value(state.demo_status().await).unwrap();
@@ -27,10 +34,10 @@ async fn demo_status(
 }
 
 async fn demo_start(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
-    if !addr.ip().is_loopback() {
+    if !is_local(&headers) {
         return err_status_json(StatusCode::FORBIDDEN, "forbidden", "demo endpoints are localhost-only");
     }
     state.demo_clear().await;
@@ -40,10 +47,10 @@ async fn demo_start(
 }
 
 async fn demo_stop(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
-    if !addr.ip().is_loopback() {
+    if !is_local(&headers) {
         return err_status_json(StatusCode::FORBIDDEN, "forbidden", "demo endpoints are localhost-only");
     }
     state.demo_clear().await;

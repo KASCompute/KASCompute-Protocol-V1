@@ -1,10 +1,11 @@
-use axum::{routing::get, Router, extract::State};
-use crate::state::AppState;
+use axum::{extract::State, routing::get, Router};
+
 use crate::domain::models::MiningStats;
+use crate::state::AppState;
 use crate::util::resp::ok;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/mining", get(mining_info))
+    Router::<AppState>::new().route("/mining", get(mining_info))
 }
 
 async fn mining_info(State(state): State<AppState>) -> impl axum::response::IntoResponse {

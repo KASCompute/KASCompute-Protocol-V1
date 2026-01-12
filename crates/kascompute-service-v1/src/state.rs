@@ -6,11 +6,9 @@ use rand::Rng;
 use tokio::sync::RwLock;
 
 use crate::domain::models::*;
-use crate::util::receipt::make_receipt;
-use crate::util::time::{months_since, now_unix};
 use crate::util::geo::geo_lookup;
-
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+use crate::util::receipt::{make_receipt, verify_ed25519_signature_hex};
+use crate::util::time::{months_since, now_unix};
 
 // =========================
 // Protocol constants (demo/testnet)
@@ -59,16 +57,20 @@ impl AppState {
             nodes: HashMap::new(),
             jobs: HashMap::new(),
             proofs: Vec::new(),
+
             next_job_id: 1,
             genesis_time,
             block_height: 0,
             total_emitted_nano: 0,
+
             node_rewards: HashMap::new(),
             node_last_block_reward: HashMap::new(),
             node_cumulative_work: HashMap::new(),
             node_stats: HashMap::new(),
+
             demo_running: false,
         };
+
         Self {
             inner: Arc::new(RwLock::new(inner)),
         }
@@ -97,6 +99,7 @@ impl AppState {
         let mut r = 0;
         let mut c = 0;
         let mut e = 0;
+
         for j in s.jobs.values() {
             match j.status {
                 JobStatus::Pending => p += 1,
@@ -105,6 +108,7 @@ impl AppState {
                 JobStatus::Expired => e += 1,
             }
         }
+
         JobsSummary {
             pending: p,
             running: r,
@@ -126,6 +130,7 @@ impl AppState {
 
     pub async fn list_recent_jobs_with_proofs(&self, limit: usize) -> Vec<RecentJobView> {
         let s = self.inner.read().await;
+
         let mut jobs: Vec<Job> = s.jobs.values().cloned().collect();
         jobs.sort_by(|a, b| b.updated_unix.cmp(&a.updated_unix));
         if jobs.len() > limit {
@@ -135,6 +140,7 @@ impl AppState {
         jobs.into_iter()
             .map(|j| {
                 let proof = s.proofs.iter().rev().find(|p| p.job_id == j.id);
+
                 RecentJobView {
                     id: j.id,
                     status: j.status.clone(),
@@ -157,6 +163,7 @@ impl AppState {
 
     pub async fn rewards_leaderboard(&self) -> Vec<RewardView> {
         let s = self.inner.read().await;
+
         let total: u64 = s
             .node_stats
             .values()
@@ -177,6 +184,7 @@ impl AppState {
                 },
             })
             .collect();
+
         out.sort_by(|a, b| b.effective_work_units.cmp(&a.effective_work_units));
         out
     }
@@ -190,14 +198,19 @@ impl AppState {
         // Fill geo if missing
         if payload.latitude.is_none() || payload.longitude.is_none() {
             if let Some((lat, lon, country)) = geo_lookup(client_ip).await {
-                if payload.latitude.is_none() { payload.latitude = Some(lat); }
-                if payload.longitude.is_none() { payload.longitude = Some(lon); }
-                if payload.country.is_none() { payload.country = country; }
+                if payload.latitude.is_none() {
+                    payload.latitude = Some(lat);
+                }
+                if payload.longitude.is_none() {
+                    payload.longitude = Some(lon);
+                }
+                if payload.country.is_none() {
+                    payload.country = country;
+                }
             }
         }
 
         let roles = if payload.roles.is_empty() {
-            // default role if not provided
             vec!["node".to_string()]
         } else {
             payload.roles.clone()
@@ -224,9 +237,15 @@ impl AppState {
         entry.compute_profile = payload.compute_profile.clone();
         entry.client_version = payload.client_version.clone();
 
-        if payload.latitude.is_some() { entry.latitude = payload.latitude; }
-        if payload.longitude.is_some() { entry.longitude = payload.longitude; }
-        if payload.country.is_some() { entry.country = payload.country; }
+        if payload.latitude.is_some() {
+            entry.latitude = payload.latitude;
+        }
+        if payload.longitude.is_some() {
+            entry.longitude = payload.longitude;
+        }
+        if payload.country.is_some() {
+            entry.country = payload.country;
+        }
 
         // ensure accounting maps exist
         s.node_rewards.entry(node_id.clone()).or_insert(0);
@@ -248,10 +267,13 @@ impl AppState {
     // Jobs / scheduler
     // -------------------------
     pub async fn create_scheduled_job(&self, is_demo: bool) -> u64 {
-	let wu: u64 = rand::thread_rng().gen_range(500_000..=5_000_000);
+        // IMPORTANT: rng must not live across .await (Send issue)
+        let wu: u64 = rand::thread_rng().gen_range(500_000..=5_000_000);
+
         let mut s = self.inner.write().await;
         let id = s.next_job_id;
         s.next_job_id += 1;
+
         let now = now_unix();
         s.jobs.insert(
             id,
@@ -268,6 +290,7 @@ impl AppState {
                 is_demo,
             },
         );
+
         id
     }
 
@@ -322,119 +345,122 @@ impl AppState {
     // -------------------------
     // Proof submit + signature verification (optional)
     // -------------------------
-    fn verify_optional_signature(public_key_hex: &str, signature_hex: &str, message: &str) -> bool {
-        let pub_bytes = match hex::decode(public_key_hex) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
-        if pub_bytes.len() != 32 { return false; }
-        let mut pub_arr = [0u8; 32];
-        pub_arr.copy_from_slice(&pub_bytes);
+pub async fn complete_job(
+    &self,
+    job_id: u64,
+    proof: ProofSubmitRequest,
+) -> Result<ProofRecord, &'static str> {
+    let ts = now_unix();
+    let mut s = self.inner.write().await;
 
-        let vk = match VerifyingKey::from_bytes(&pub_arr) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
+    // expire old leases first
+    Self::expire_leases_locked(&mut s, ts);
 
-        let sig_bytes = match hex::decode(signature_hex) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
-        if sig_bytes.len() != 64 { return false; }
-        let mut sig_arr = [0u8; 64];
-        sig_arr.copy_from_slice(&sig_bytes);
-        let sig = Signature::from_bytes(&sig_arr);
-
-        vk.verify(message.as_bytes(), &sig).is_ok()
+    let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
+    if !matches!(job.status, JobStatus::Running) {
+        return Err("job_not_running");
+    }
+    if job.assigned_node.as_ref() != Some(&proof.node_id) {
+        return Err("job_wrong_node");
     }
 
-    pub async fn complete_job(&self, job_id: u64, proof: ProofSubmitRequest) -> Result<ProofRecord, &'static str> {
-        let ts = now_unix();
-        let mut s = self.inner.write().await;
+    // finalize job
+    job.status = JobStatus::Completed;
+    job.updated_unix = ts;
+    job.completed_unix = Some(ts);
 
-        // expire old leases first
-        Self::expire_leases_locked(&mut s, ts);
+    // workload mode is informational only (NOT security-critical)
+    let mode = proof
+        .workload_mode
+        .clone()
+        .unwrap_or_else(|| "sim".to_string());
 
-        let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
-        if !matches!(job.status, JobStatus::Running) {
-            return Err("job_not_running");
-        }
-        if job.assigned_node.as_ref() != Some(&proof.node_id) {
-            return Err("job_wrong_node");
-        }
-
-        // finalize job
-        job.status = JobStatus::Completed;
-        job.updated_unix = ts;
-        job.completed_unix = Some(ts);
-
-        // workload mode default
-        let mode = proof.workload_mode.clone().unwrap_or_else(|| "sim".to_string());
-
-        // miner time (fallback)
-        let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
-            if let Some(a) = job.assigned_unix {
-                (ts.saturating_sub(a)) * 1000
-            } else {
-                0
-            }
-        });
-
-        let is_verified = mode.as_str() == "hash";
-        let effective_wu = if is_verified {
-            (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
+    // miner time (fallback)
+    let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
+        if let Some(a) = job.assigned_unix {
+            (ts.saturating_sub(a)) * 1000
         } else {
-            proof.work_units
-        };
+            0
+        }
+    });
 
-        // signature check if provided
-        let mut sig_ok = false;
-        if let (Some(sig), Some(ts_msg)) = (proof.signature_hex.clone(), proof.timestamp_unix) {
+    // -------------------------
+    // signature verification (matches node-launcher canonical format)
+    // message: "pf|<node_id>|<job_id>|<work_units>|<timestamp>"
+    // -------------------------
+    let mut sig_ok = false;
+
+    if let (Some(sig_hex), Some(ts_msg)) = (proof.signature_hex.clone(), proof.timestamp_unix) {
+        // optional replay protection ±60s
+        if ts.abs_diff(ts_msg) <= 60 {
             if let Some(node) = s.nodes.get(&proof.node_id) {
-                // canonical message: "{job_id}|{result_hash}|{work_units}|{timestamp}"
-                let rh = proof.result_hash.clone().unwrap_or_default();
-                let msg = format!("{}|{}|{}|{}", job_id, rh, proof.work_units, ts_msg);
-                sig_ok = Self::verify_optional_signature(&node.public_key_hex, &sig, &msg);
+                let msg = format!(
+                    "pf|{}|{}|{}|{}",
+                    proof.node_id, job_id, proof.work_units, ts_msg
+                );
+
+                sig_ok = verify_ed25519_signature_hex(&node.public_key_hex, &sig_hex, &msg);
             }
         }
-
-        let receipt = make_receipt(&proof.node_id, job_id, ts, proof.work_units);
-
-        let record = ProofRecord {
-            node_id: proof.node_id.clone(),
-            job_id,
-            work_units: proof.work_units,
-            effective_work_units: effective_wu,
-            timestamp_unix: ts,
-            workload_mode: mode.clone(),
-            elapsed_ms,
-            result_hash: proof.result_hash.clone(),
-            client_version: proof.client_version.clone(),
-            receipt: receipt.clone(),
-            signature_verified: sig_ok,
-        };
-
-        s.proofs.push(record.clone());
-
-        // cumulative work tracking (raw)
-        *s.node_cumulative_work.entry(proof.node_id.clone()).or_insert(0) += proof.work_units;
-
-        // node stats (effective + verified raw)
-        let st = s.node_stats.entry(proof.node_id.clone()).or_insert(NodeStats {
-            node_id: proof.node_id.clone(),
-            first_seen_unix: ts,
-            last_seen_unix: ts,
-            total_effective_work_units: 0,
-            verified_work_units: 0,
-        });
-        st.last_seen_unix = ts;
-        st.total_effective_work_units += effective_wu;
-        if is_verified {
-            st.verified_work_units += proof.work_units;
-        }
-
-        Ok(record)
     }
+
+    // STRICT verify for protocol-v1 clients (recommended)
+    if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
+        return Err("invalid_signature");
+    }
+
+    // -------------------------
+    // effective work: bonus ONLY if signature verified
+    // -------------------------
+    let effective_wu = if sig_ok {
+        (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
+    } else {
+        proof.work_units
+    };
+
+    let receipt = make_receipt(&proof.node_id, job_id, ts, proof.work_units);
+
+    let record = ProofRecord {
+        node_id: proof.node_id.clone(),
+        job_id,
+        work_units: proof.work_units,
+        effective_work_units: effective_wu,
+        timestamp_unix: ts,
+        workload_mode: mode,
+        elapsed_ms,
+        result_hash: proof.result_hash.clone(),
+        client_version: proof.client_version.clone(),
+        receipt: receipt.clone(),
+        signature_verified: sig_ok,
+    };
+
+    s.proofs.push(record.clone());
+
+    // cumulative work tracking (raw)
+    *s.node_cumulative_work
+        .entry(proof.node_id.clone())
+        .or_insert(0) += proof.work_units;
+
+    // node stats (effective + verified raw)
+    let st = s.node_stats.entry(proof.node_id.clone()).or_insert(NodeStats {
+        node_id: proof.node_id.clone(),
+        first_seen_unix: ts,
+        last_seen_unix: ts,
+        total_effective_work_units: 0,
+        verified_work_units: 0,
+    });
+
+    st.last_seen_unix = ts;
+    st.total_effective_work_units += effective_wu;
+
+    // verified_work_units reflects signature verification
+    if sig_ok {
+        st.verified_work_units += proof.work_units;
+    }
+
+    Ok(record)
+}
+
 
     // -------------------------
     // Mining engine
@@ -462,13 +488,18 @@ impl AppState {
         for p in s.proofs.iter() {
             if now >= p.timestamp_unix && now - p.timestamp_unix <= window {
                 // uptime gate
-                let allow = s.node_stats.get(&p.node_id).map(|st| {
-                    now.saturating_sub(st.first_seen_unix) >= MIN_UPTIME_FOR_REWARDS_SEC
-                }).unwrap_or(false);
+                let allow = s
+                    .node_stats
+                    .get(&p.node_id)
+                    .map(|st| now.saturating_sub(st.first_seen_unix) >= MIN_UPTIME_FOR_REWARDS_SEC)
+                    .unwrap_or(false);
 
-                if !allow { continue; }
+                if !allow {
+                    continue;
+                }
 
-                *weight_map.entry(p.node_id.clone()).or_insert(0.0) += p.effective_work_units as f64;
+                *weight_map.entry(p.node_id.clone()).or_insert(0.0) +=
+                    p.effective_work_units as f64;
                 total_wu += p.effective_work_units as f64;
             }
         }
@@ -501,12 +532,18 @@ impl AppState {
 
         for p in s.proofs.iter() {
             if now >= p.timestamp_unix && now - p.timestamp_unix <= window {
-                let allow = s.node_stats.get(&p.node_id).map(|st| {
-                    now.saturating_sub(st.first_seen_unix) >= MIN_UPTIME_FOR_REWARDS_SEC
-                }).unwrap_or(false);
-                if !allow { continue; }
+                let allow = s
+                    .node_stats
+                    .get(&p.node_id)
+                    .map(|st| now.saturating_sub(st.first_seen_unix) >= MIN_UPTIME_FOR_REWARDS_SEC)
+                    .unwrap_or(false);
 
-                *weight_map.entry(p.node_id.clone()).or_insert(0.0) += p.effective_work_units as f64;
+                if !allow {
+                    continue;
+                }
+
+                *weight_map.entry(p.node_id.clone()).or_insert(0.0) +=
+                    p.effective_work_units as f64;
                 total_wu += p.effective_work_units as f64;
             }
         }
@@ -516,7 +553,11 @@ impl AppState {
             let total = *s.node_rewards.get(node_id).unwrap_or(&0);
             let last = *s.node_last_block_reward.get(node_id).unwrap_or(&0);
             let wu_for_node = *weight_map.get(node_id).unwrap_or(&0.0);
-            let share_pct = if total_wu > 0.0 { (wu_for_node / total_wu) * 100.0 } else { 0.0 };
+            let share_pct = if total_wu > 0.0 {
+                (wu_for_node / total_wu) * 100.0
+            } else {
+                0.0
+            };
             let cumulative_work = *s.node_cumulative_work.get(node_id).unwrap_or(&0);
 
             per_node.push(NodeMiningStats {
@@ -645,11 +686,12 @@ impl AppState {
             });
         }
 
-        let mut rng = rand::thread_rng();
+        // IMPORTANT: rng must not live across .await
         for _ in 0..jobs {
-            let wu = rng.gen_range(500_000..=5_000_000);
+            let wu: u64 = rand::thread_rng().gen_range(500_000..=5_000_000);
             let id = s.next_job_id;
             s.next_job_id += 1;
+
             s.jobs.insert(
                 id,
                 Job {
@@ -685,6 +727,7 @@ impl AppState {
         let s = self.inner.read().await;
         let demo_nodes = s.nodes.keys().filter(|k| k.starts_with("demo-")).count();
         let demo_jobs = s.jobs.values().filter(|j| j.is_demo).count();
+
         DemoStatus {
             enabled: s.demo_running,
             demo_nodes,

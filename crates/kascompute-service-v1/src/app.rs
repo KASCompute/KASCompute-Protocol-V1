@@ -12,10 +12,13 @@ pub fn build_app(state: AppState) -> Router {
         .allow_headers(Any)
         .allow_methods(Any);
 
-    let dashboard_root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dashboard-pro");
+    let dashboard_root: PathBuf =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dashboard-pro");
+
     let dashboard_service = ServeDir::new(dashboard_root.clone())
         .append_index_html_on_directories(true)
         .not_found_service(ServeFile::new(dashboard_root.join("index.html")));
+
 
     Router::new()
         .route("/", get(|| async { Redirect::permanent("/dashboard/") }))

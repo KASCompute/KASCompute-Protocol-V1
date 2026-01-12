@@ -1,10 +1,11 @@
-use axum::{routing::get, Router, extract::State};
-use crate::state::AppState;
+use axum::{extract::State, routing::get, Router};
+
 use crate::domain::models::Metrics;
+use crate::state::AppState;
 use crate::util::resp::ok;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/metrics", get(metrics))
+    Router::<AppState>::new().route("/metrics", get(metrics))
 }
 
 async fn metrics(State(state): State<AppState>) -> impl axum::response::IntoResponse {

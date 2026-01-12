@@ -9,9 +9,10 @@ mod mining;
 mod rewards;
 mod metrics;
 mod debug_demo;
+mod dashboard;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    Router::<AppState>::new()
         .merge(health::router())
         .merge(nodes::router())
         .merge(jobs::router())
@@ -20,4 +21,5 @@ pub fn router() -> Router<AppState> {
         .merge(rewards::router())
         .merge(metrics::router())
         .merge(debug_demo::router())
+        .merge(dashboard::router())
 }

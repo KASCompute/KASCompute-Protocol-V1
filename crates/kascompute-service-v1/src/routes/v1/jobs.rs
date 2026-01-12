@@ -1,12 +1,17 @@
-use axum::{routing::{get, post}, Router, extract::{Path, State}, Json};
+use axum::{
+    extract::{Path, State},
+    routing::{get, post},
+    Json, Router,
+};
 
-
-use crate::domain::models::{NextJobRequest, NextJobResponse, ProofSubmitRequest, JobsSummary, Job, RecentJobView};
+use crate::domain::models::{
+    Job, JobsSummary, NextJobRequest, NextJobResponse, ProofSubmitRequest, RecentJobView,
+};
 use crate::state::AppState;
 use crate::util::resp::{ok, err_status_json};
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    Router::<AppState>::new()
         .route("/jobs/next", post(next_job))
         .route("/jobs/:job_id/proof", post(submit_proof))
         .route("/jobs", get(list_jobs))
@@ -28,7 +33,11 @@ async fn submit_proof(
     Json(p): Json<ProofSubmitRequest>,
 ) -> impl axum::response::IntoResponse {
     match state.complete_job(job_id, p).await {
-        Ok(record) => ok(serde_json::json!({"status":"accepted","receipt": record.receipt, "signature_verified": record.signature_verified})),
+        Ok(record) => ok(serde_json::json!({
+            "status": "accepted",
+            "receipt": record.receipt,
+            "signature_verified": record.signature_verified
+        })),
         Err(code) => err_status_json(axum::http::StatusCode::BAD_REQUEST, code, "proof rejected"),
     }
 }

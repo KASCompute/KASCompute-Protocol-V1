@@ -46,11 +46,11 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+  
     let app = app::build_app(state);
 
     println!("Protocol-v1 running on 0.0.0.0:{port}");
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

@@ -1,4 +1,69 @@
-/target
-**/target
-/crates/node-launcher-v1/configs
+########################################
+# Rust / Cargo
+########################################
+/target/
+**/target/
+
+# For applications/binaries (recommended)
 Cargo.lock
+
+########################################
+# Node / Launcher local secrets & identity
+########################################
+
+# Node identity (NEVER commit)
+**/node-identity.json
+**/node-identity.*
+**/*identity*
+**/*private*
+**/*secret*
+**/*credential*
+
+# Local configs (real configs should stay local)
+**/*.local.*
+**/*.secret.*
+**/*.private.*
+**/*.env
+
+# Crypto / key material
+*.key
+*.pem
+*.pfx
+*.p12
+
+########################################
+# Launcher configs (allow examples only)
+########################################
+
+# Ignore real configs
+crates/node-launcher-v1/configs/*.json
+crates/node-launcher-v1/configs/*.yaml
+crates/node-launcher-v1/configs/*.yml
+
+# Allow example/templates & docs
+!crates/node-launcher-v1/configs/*.example.json
+!crates/node-launcher-v1/configs/*.example.yaml
+!crates/node-launcher-v1/configs/*.example.yml
+!crates/node-launcher-v1/configs/README.md
+
+########################################
+# Logs / runtime artifacts
+########################################
+*.log
+logs/
+tmp/
+.cache/
+
+########################################
+# OS / Editor
+########################################
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+########################################
+# Misc safety net
+########################################
+secrets.*
+credentials.*

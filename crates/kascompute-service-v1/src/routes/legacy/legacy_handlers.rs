@@ -6,7 +6,7 @@ use crate::domain::models::{HeartbeatPayload, NextJobRequest, ProofSubmitRequest
 use crate::util::time::now_unix;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    Router::<AppState>::new()
         // old public
         .route("/health", get(|| async { "OK" }))
         .route("/node/heartbeat", post(heartbeat_old))
