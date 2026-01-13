@@ -20,7 +20,7 @@ pub fn router() -> Router<AppState> {
         .merge(mining::router())
         .merge(rewards::router())
         .merge(metrics::router())
-        .merge(debug_demo::router())
+        .nest("/debug", debug_demo::router())
         .merge(dashboard::router())
-	.nest("/debug", debug::router())
 }
+
