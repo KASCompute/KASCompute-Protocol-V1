@@ -22,4 +22,5 @@ pub fn router() -> Router<AppState> {
         .merge(metrics::router())
         .merge(debug_demo::router())
         .merge(dashboard::router())
+	.nest("/debug", debug::router())
 }

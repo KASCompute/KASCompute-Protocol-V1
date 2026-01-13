@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::net::IpAddr;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct IpApiResponse {
@@ -10,8 +11,21 @@ struct IpApiResponse {
 }
 
 pub async fn geo_lookup(ip: IpAddr) -> Option<(f64, f64, Option<String>)> {
-    let url = format!("https://ip-api.com/json/{ip}?fields=status,country,lat,lon");
-    let resp = reqwest::get(&url).await.ok()?;
+    // ip-api free: HTTP only
+    let url = format!("http://ip-api.com/json/{ip}?fields=status,country,lat,lon");
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get(url)
+        .header("User-Agent", "kascompute-protocol-v1/1.0")
+        .send()
+        .await
+        .ok()?;
+
     let body: IpApiResponse = resp.json().await.ok()?;
     if body.status == "success" {
         if let (Some(lat), Some(lon)) = (body.lat, body.lon) {

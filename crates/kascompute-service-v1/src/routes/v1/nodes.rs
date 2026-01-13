@@ -5,10 +5,21 @@ use axum::{
     Json, Router,
 };
 
+use serde::Serialize;
+
 use crate::domain::models::{HeartbeatPayload, Node};
-use crate::state::AppState;
+use crate::state::{AppState, ACTIVE_WINDOW_SEC};
 use crate::util::ip::client_ip_from_headers;
 use crate::util::resp::ok;
+use crate::util::time::now_unix;
+
+#[derive(Serialize)]
+struct NodeView {
+    #[serde(flatten)]
+    node: Node,
+    is_online: bool,
+    seconds_since_seen: u64,
+}
 
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
@@ -18,7 +29,23 @@ pub fn router() -> Router<AppState> {
 
 async fn list_nodes(State(state): State<AppState>) -> impl axum::response::IntoResponse {
     let nodes: Vec<Node> = state.list_nodes().await;
-    ok(nodes)
+    let now = now_unix();
+
+    let out: Vec<NodeView> = nodes
+        .into_iter()
+        .map(|n| {
+            let seconds = now.saturating_sub(n.last_seen_unix);
+            let online = seconds <= ACTIVE_WINDOW_SEC;
+
+            NodeView {
+                node: n,
+                is_online: online,
+                seconds_since_seen: seconds,
+            }
+        })
+        .collect();
+
+    ok(out)
 }
 
 async fn heartbeat(
@@ -26,13 +53,7 @@ async fn heartbeat(
     State(state): State<AppState>,
     Json(payload): Json<HeartbeatPayload>,
 ) -> impl axum::response::IntoResponse {
-    
     let ip = client_ip_from_headers(&headers, std::net::IpAddr::from([0, 0, 0, 0]));
-
-    let _heartbeat_ts = payload.timestamp_unix;
-    let _heartbeat_sig = payload.signature_hex.as_deref();
-
     state.upsert_node(payload, ip).await;
-
     ok(serde_json::json!({ "accepted": true }))
 }

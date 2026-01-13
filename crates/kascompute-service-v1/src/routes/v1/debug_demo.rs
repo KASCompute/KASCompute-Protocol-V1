@@ -15,6 +15,7 @@ pub fn router() -> Router<AppState> {
         .route("/status", get(demo_status))
         .route("/start", post(demo_start))
         .route("/stop", post(demo_stop))
+	.route("/ip", get(debug_ip))
 }
 
 fn is_local(headers: &HeaderMap) -> bool {
@@ -55,5 +56,20 @@ async fn demo_stop(
     }
     state.demo_clear().await;
     let v = serde_json::to_value(state.demo_status().await).unwrap();
+    ok(v)
+}
+
+async fn debug_ip(headers: HeaderMap) -> impl axum::response::IntoResponse {
+    let picked = client_ip_from_headers(&headers, IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+    let v = serde_json::json!({
+        "picked_ip": picked.to_string(),
+        "x_forwarded_for": headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
+        "x_real_ip": headers.get("x-real-ip").and_then(|v| v.to_str().ok()),
+        "forwarded": headers.get("forwarded").and_then(|v| v.to_str().ok()),
+        "cf_connecting_ip": headers.get("cf-connecting-ip").and_then(|v| v.to_str().ok()),
+        "true_client_ip": headers.get("true-client-ip").and_then(|v| v.to_str().ok()),
+    });
+
     ok(v)
 }

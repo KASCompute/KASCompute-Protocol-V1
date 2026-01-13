@@ -20,3 +20,4 @@ hex = "0.4"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 shared-v1 = { path = "../shared-v1" }
+maxminddb = "0.24"
