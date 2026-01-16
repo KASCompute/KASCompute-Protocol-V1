@@ -1,0 +1,71 @@
+KASCompute Protocol V1
+Restricted Use & Source-Available License
+
+Copyright (c) 2026 Tarik Kaya
+
+This license governs the use of the KASCompute Protocol V1 specification,
+reference implementations, message formats, and all associated documentation
+(the “Protocol”).
+
+────────────────────────────────────────────
+1. PERMITTED USE
+────────────────────────────────────────────
+
+You are permitted to:
+
+• Read and study the Protocol
+• Review the cryptographic design
+• Audit the message formats and flows
+• Discuss the Protocol publicly for research or educational purposes
+
+────────────────────────────────────────────
+2. RESTRICTED USE
+────────────────────────────────────────────
+
+You are NOT permitted to, without explicit prior written consent from
+the copyright holder (Tarik Kaya):
+
+• Implement the Protocol in production systems
+• Deploy or operate a network using the Protocol
+• Fork, clone, or rebrand the Protocol as an independent project
+• Use the Protocol for commercial purposes
+• Represent any implementation as compatible with or derived from
+  KASCompute Protocol V1
+
+────────────────────────────────────────────
+3. NO NETWORK RIGHTS
+────────────────────────────────────────────
+
+This license does NOT grant any rights to:
+
+• Launch a public or private network using the Protocol
+• Issue tokens, rewards, or economic systems based on the Protocol
+• Claim protocol compatibility, lineage, or official status
+
+────────────────────────────────────────────
+4. NO TRADEMARK RIGHTS
+────────────────────────────────────────────
+
+This license does not grant permission to use the names:
+
+“KASCompute”, “KCT”, project logos, branding, domain names, or
+any associated identifiers.
+
+────────────────────────────────────────────
+5. FUTURE OPENING
+────────────────────────────────────────────
+
+The Protocol may be relicensed in the future under a more permissive
+license at the sole discretion of the copyright holder.
+
+────────────────────────────────────────────
+6. DISCLAIMER
+────────────────────────────────────────────
+
+THE PROTOCOL IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THE PROTOCOL OR THE USE OF THE PROTOCOL.

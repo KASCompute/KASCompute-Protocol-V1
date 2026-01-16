@@ -49,13 +49,22 @@ fn now_unix() -> u64 {
 }
 
 fn api_base_url(cfg: &NodeConfig) -> String {
-    std::env::var("KASCOMPUTE_API")
+    let mut base = std::env::var("KASCOMPUTE_API")
         .ok()
         .or_else(|| cfg.api_base.clone())
-        .unwrap_or_else(|| "http://127.0.0.1:8080".to_string())
-        .trim_end_matches('/')
-        .to_string()
+        .unwrap_or_else(|| "https://kascompute-protocol-v1.onrender.com".to_string());
+
+    // normalize: remove trailing slash
+    base = base.trim_end_matches('/').to_string();
+
+    // normalize: if user already provided /v1, strip it
+    if base.ends_with("/v1") {
+        base = base.trim_end_matches("/v1").to_string();
+    }
+
+    base
 }
+
 
 fn ensure_config(path: &str) -> Result<NodeConfig> {
     let cfg_path = Path::new(path);
