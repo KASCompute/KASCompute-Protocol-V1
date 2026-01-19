@@ -7,7 +7,8 @@ use tokio::sync::RwLock;
 
 use crate::domain::models::*;
 use crate::util::geo::geo_lookup;
-use crate::util::receipt::{make_receipt, verify_ed25519_signature_hex};
+use crate::util::receipt::{make_receipt, verify_ed25519_signature_hex, verify_proof_signature_v1, ProofPayloadV1};
+
 use crate::util::time::{months_since, now_unix};
 
 // =========================
@@ -384,30 +385,56 @@ pub async fn complete_job(
         }
     });
 
-    // -------------------------
-    // signature verification (matches node-launcher canonical format)
-    // message: "pf|<node_id>|<job_id>|<work_units>|<timestamp>"
-    // -------------------------
-    let mut sig_ok = false;
+// -------------------------
+// signature verification
+// V1 (launcher): ed25519( sha256( json(payload) ) )
+// fallback: legacy "pf|..."
+// -------------------------
+let mut sig_ok = false;
 
-    if let (Some(sig_hex), Some(ts_msg)) = (proof.signature_hex.clone(), proof.timestamp_unix) {
-        // optional replay protection ±60s
-        if ts.abs_diff(ts_msg) <= 60 {
-            if let Some(node) = s.nodes.get(&proof.node_id) {
-                let msg = format!(
-                    "pf|{}|{}|{}|{}",
-                    proof.node_id, job_id, proof.work_units, ts_msg
-                );
+// timestamp: prefer miner provided timestamp_unix, otherwise server time
+let ts_msg = proof.timestamp_unix.unwrap_or(ts);
 
-                sig_ok = verify_ed25519_signature_hex(&node.public_key_hex, &sig_hex, &msg);
-            }
-        }
+// optional replay protection ±60s (only if miner sent ts)
+if let Some(ts_sent) = proof.timestamp_unix {
+    if ts.abs_diff(ts_sent) > 60 {
+        // too old/new -> invalid (keeps sig_ok false)
     }
+}
 
-    // STRICT verify for protocol-v1 clients (recommended)
-    if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
-        return Err("invalid_signature");
+if let (Some(sig_hex), Some(node)) = (proof.signature_hex.clone(), s.nodes.get(&proof.node_id)) {
+    // Try V1 verify first (works with your new launcher)
+    let payload = ProofPayloadV1 {
+        node_id: proof.node_id.clone(),
+        job_id,
+        work_units: proof.work_units,
+        workload_mode: mode.clone(),
+        elapsed_ms,
+        client_version: proof
+            .client_version
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        ts: ts_msg,
+    };
+
+    sig_ok = verify_proof_signature_v1(&node.public_key_hex, &sig_hex, &payload);
+
+    // Fallback legacy verify (older clients)
+    if !sig_ok {
+        let legacy_msg = format!(
+            "pf|{}|{}|{}|{}",
+            proof.node_id, job_id, proof.work_units, ts_msg
+        );
+        sig_ok = verify_ed25519_signature_hex(&node.public_key_hex, &sig_hex, &legacy_msg);
     }
+}
+
+// STRICT verify (optional): only enforce if client explicitly declares protocol-v1
+// NOTE: your launcher sends "launcher-miner/0.2.0" so DO NOT enforce here or you'd reject everything.
+if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
+    return Err("invalid_signature");
+}
+
 
     // -------------------------
     // effective work: bonus ONLY if signature verified
