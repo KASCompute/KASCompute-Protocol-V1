@@ -8,22 +8,38 @@
 Cargo.lock
 
 ########################################
+# Environment / Secrets
+########################################
+.env
+.env.*
+!.env.example
+**/*.env
+
+########################################
 # Node / Launcher local secrets & identity
 ########################################
 
 # Node identity (NEVER commit)
 **/node-identity.json
 **/node-identity.*
-**/*identity*
-**/*private*
-**/*secret*
-**/*credential*
-
-# Local configs (real configs should stay local)
 **/*.local.*
 **/*.secret.*
 **/*.private.*
-**/*.env
+
+# Avoid overly-broad patterns like **/*identity*
+# Broad words only for typical secret file extensions
+**/*identity*.json
+**/*identity*.toml
+**/*identity*.yaml
+**/*identity*.yml
+**/*secret*.json
+**/*secret*.toml
+**/*secret*.yaml
+**/*secret*.yml
+**/*credential*.json
+**/*credential*.toml
+**/*credential*.yaml
+**/*credential*.yml
 
 # Crypto / key material
 *.key
@@ -61,6 +77,12 @@ tmp/
 Thumbs.db
 .vscode/
 .idea/
+
+########################################
+# Windows-specific
+########################################
+*.exe
+*.pdb
 
 ########################################
 # Misc safety net

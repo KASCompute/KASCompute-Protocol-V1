@@ -74,6 +74,8 @@ async fn proof_old(State(state): State<AppState>, Json(p): Json<ProofOldPayload>
         client_version: p.client_version,
         timestamp_unix: p.timestamp_unix,
         signature_hex: p.signature_hex,
+	proof_hash_hex: None,
+	public_key_hex: None,
     };
     match state.complete_job(p.job_id, req).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status":"ok"}))),

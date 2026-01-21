@@ -6,7 +6,11 @@ Protocol V1 defines the first-generation off-chain compute protocol used by KASC
 
 
 
-It is responsible for coordinating compute activity outside of Kaspa L1, while being explicitly designed to align with Kaspa’s future vProgs execution and settlement layer.
+It coordinates decentralized compute execution outside of Kaspa L1, while being explicitly designed to align with Kaspa’s future vProgs execution and settlement layer.
+
+
+
+Protocol V1 is minimal by design, deterministic, and built to evolve toward on-chain settlement without refactoring the core protocol.
 
 
 
@@ -34,11 +38,17 @@ Protocol V1 currently handles:
 
 
 
-Important:
+🧠 ComputeDAG execution (task graphs with dependencies)
+
+
+
+Important
+
+
 
 Protocol V1 operates fully off-chain today,
 
-but its data structures and cryptographic design are vProgs-compatible by design.
+but its data structures, hashing model, and cryptographic flows are vProgs-compatible by design.
 
 
 
@@ -58,7 +68,11 @@ Real-time observability
 
 
 
-Minimal assumptions about trust
+Minimal trust assumptions
+
+
+
+DAG-based execution for complex workloads
 
 
 
@@ -102,7 +116,7 @@ Attach public key for verification
 
 {
 
-&nbsp; "node\_id": "...",
+&nbsp; "node\_id": "kc\_node\_01",
 
 &nbsp; "job\_id": 123,
 
@@ -140,19 +154,171 @@ This enables:
 
 
 
-offline verification
+Offline verification
 
 
 
-deterministic replay
+Deterministic replay
 
 
 
-future on-chain anchoring
+Future on-chain anchoring
 
 
 
-trust-minimized validation
+Trust-minimized validation
+
+
+
+🧠 ComputeDAG Execution (Protocol V1)
+
+
+
+Protocol V1 includes a native DAG-based execution engine for structured compute workloads.
+
+
+
+A ComputeDAG consists of:
+
+
+
+Tasks (nodes)
+
+
+
+Explicit dependencies (edges)
+
+
+
+Deterministic task hashing
+
+
+
+Run-scoped execution state
+
+
+
+Key properties
+
+
+
+Deterministic DAG root hash
+
+
+
+Dependency-aware scheduling
+
+
+
+FIFO-ready queue per run
+
+
+
+Stateless workers (nodes do not coordinate with each other)
+
+
+
+🔁 Task Leasing Model
+
+
+
+Each task is leased to a node for a fixed time window.
+
+
+
+Tasks transition: Pending → Ready → Running → Completed
+
+
+
+A running task is owned by exactly one node
+
+
+
+Leases expire automatically
+
+
+
+Leases can be renewed explicitly by the owning node
+
+
+
+This prevents:
+
+
+
+Stalled execution
+
+
+
+Double execution
+
+
+
+Long-running task lockups
+
+
+
+🔄 Lease Renewal
+
+
+
+Nodes may extend an active lease:
+
+
+
+POST /v1/runs/:run\_id/tasks/:task\_id/renew
+
+
+
+
+
+Rules:
+
+
+
+Only the assigned node may renew
+
+
+
+Expired leases cannot be renewed
+
+
+
+Renewal preserves deterministic execution
+
+
+
+✅ Task Completion
+
+
+
+Submitting a task proof:
+
+
+
+POST /v1/runs/:run\_id/tasks/:task\_id/proof
+
+
+
+
+
+On completion:
+
+
+
+Task is marked Completed
+
+
+
+Lease is cleared
+
+
+
+Dependent tasks are unlocked deterministically
+
+
+
+Newly ready tasks are queued
 
 
 
@@ -170,19 +336,19 @@ Used for:
 
 
 
-node presence
+Node presence
 
 
 
-geo enrichment
+Geo enrichment
 
 
 
-uptime tracking
+Uptime tracking
 
 
 
-role signaling (node / miner)
+Role signaling (node, miner)
 
 
 
@@ -198,11 +364,15 @@ Returns:
 
 
 
-job ID
+Job ID
 
 
 
-work units
+Work units
+
+
+
+Lease expiration
 
 
 
@@ -218,21 +388,65 @@ Accepts:
 
 
 
-compute result
+Compute result
 
 
 
-cryptographic proof
+Cryptographic proof
 
 
 
-performance metadata
+Performance metadata
 
 
 
-Note:
+Note
 
 Extra fields are ignored → forward compatibility guaranteed.
+
+
+
+🧠 ComputeDAG (V1)
+
+POST /v1/dags/submit
+
+POST /v1/dags/:dag\_id/runs
+
+POST /v1/runs/:run\_id/next
+
+POST /v1/runs/:run\_id/tasks/:task\_id/proof
+
+POST /v1/runs/:run\_id/tasks/:task\_id/renew
+
+GET  /v1/runs/:run\_id
+
+
+
+🧪 Current Status
+
+
+
+Protocol: Active
+
+
+
+ComputeDAG: Active
+
+
+
+Cryptography: Implemented (SHA-256 + Ed25519)
+
+
+
+Leasing \& Renewals: Implemented
+
+
+
+Settlement: Off-chain
+
+
+
+ZK Proofs: Not yet
 
 
 
@@ -260,27 +474,7 @@ ZK verification layer (post-vProgs)
 
 
 
-🧪 Current Status
-
-
-
-Protocol: Active
-
-
-
-Cryptography: Implemented (SHA-256 + Ed25519)
-
-
-
-Settlement: Off-chain
-
-
-
-ZK Proofs: Not yet
-
-
-
-📌 Notes
+📌 Design Notes
 
 
 
@@ -292,15 +486,15 @@ Complexity is deferred to:
 
 
 
-verification layers
+Verification layers
 
 
 
-settlement logic
+Settlement logic
 
 
 
-future vProgs execution
+Future vProgs execution
 
 
 
@@ -308,19 +502,19 @@ This keeps the protocol:
 
 
 
-auditable
+Auditable
 
 
 
-flexible
+Flexible
 
 
 
-future-proof
+Future-proof
 
 
 
 Founder: Tarik Kaya
 
-Built with ⚡ \& 💚 on Kaspa.
+Built with ⚡ \& 💚 on Kaspa
 

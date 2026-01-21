@@ -10,6 +10,7 @@ mod rewards;
 mod metrics;
 mod debug_demo;
 mod dashboard;
+mod dags;
 
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
@@ -22,5 +23,5 @@ pub fn router() -> Router<AppState> {
         .merge(metrics::router())
         .nest("/debug", debug_demo::router())
         .merge(dashboard::router())
+        .merge(dags::router())
 }
-

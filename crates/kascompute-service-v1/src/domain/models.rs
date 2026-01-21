@@ -8,7 +8,7 @@ pub struct Node {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub country: Option<String>,
-    pub roles: Vec<String>,          // ["node","miner"]
+    pub roles: Vec<String>,              // ["node","miner"]
     pub compute_profile: Option<String>, // legacy compatibility
     pub client_version: Option<String>,
 }
@@ -124,11 +124,17 @@ pub struct ProofSubmitRequest {
     #[serde(default)]
     pub client_version: Option<String>,
 
-    // optional signature fields (recommended)
-    #[serde(default)]
+    #[serde(default, alias = "ts")]
     pub timestamp_unix: Option<u64>,
-    #[serde(default)]
+
+    #[serde(default, alias = "signature")]
     pub signature_hex: Option<String>,
+
+    #[serde(default, alias = "proof_hash")]
+    pub proof_hash_hex: Option<String>,
+
+    #[serde(default)]
+    pub public_key_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,4 +210,142 @@ pub struct Metrics {
     pub avg_job_ms: u64,
     pub proofs_window: usize,
     pub timestamp: u64,
+}
+
+// =========================
+// ComputeDAG (Protocol V1)
+// =========================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeDagSubmitRequest {
+    pub spec: crate::util::compute_dag::DagSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeDagSubmitResponse {
+    pub dag_id: String,
+    pub dag_root_hash: String,
+    pub tasks_total: usize,
+}
+
+/// Create a new execution run for an existing DAG spec.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeDagRunCreateResponse {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DagTaskStatus {
+    Pending,
+    Ready,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagTask {
+    /// Run instance id (created when starting a run)
+    pub run_id: String,
+
+    /// DAG definition id (hash of canonical DAG spec)
+    pub dag_id: String,
+
+    /// Stable task id inside a DAG
+    pub task_id: String,
+
+    /// Deterministic hash binding task to dag_root_hash + task fields
+    pub task_hash: String,
+
+    pub work_units: u64,
+    pub task_type: String,
+    pub deps: Vec<String>, // task_ids
+
+    pub status: DagTaskStatus,
+
+    pub assigned_node: Option<String>,
+    pub assigned_unix: Option<u64>,
+    pub lease_expires_unix: Option<u64>,
+    pub completed_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeDagView {
+    pub dag_id: String,
+    pub dag_root_hash: String,
+    pub name: String,
+    pub created_unix: u64,
+    pub tasks_total: usize,
+    pub tasks_completed: usize,
+    pub tasks_ready: usize,
+    pub tasks_running: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeDagRunView {
+    pub run_id: String,
+    pub dag_id: String,
+    pub dag_root_hash: String,
+    pub name: String,
+    pub created_unix: u64,
+    pub tasks_total: usize,
+    pub tasks_ready: usize,
+    pub tasks_running: usize,
+    pub tasks_completed: usize,
+    pub tasks_failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagNextTaskRequest {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagNextTaskResponse {
+    pub task: Option<DagTaskLease>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagTaskLease {
+    pub run_id: String,
+    pub dag_id: String,
+    pub task_id: String,
+    pub task_hash: String,
+    pub work_units: u64,
+    pub task_type: String,
+    pub lease_expires_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagTaskProofSubmitRequest {
+    pub node_id: String,
+    pub work_units: u64,
+    pub elapsed_ms: u64,
+    pub client_version: Option<String>,
+
+    #[serde(default, alias = "ts")]
+    pub timestamp_unix: Option<u64>,
+
+    #[serde(default, alias = "signature")]
+    pub signature_hex: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagTaskProofSubmitResponse {
+    pub status: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub unlocked_ready: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagTaskLeaseRenewRequest {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagTaskLeaseRenewResponse {
+    pub run_id: String,
+    pub task_id: String,
+    pub lease_expires_unix: u64,
 }
