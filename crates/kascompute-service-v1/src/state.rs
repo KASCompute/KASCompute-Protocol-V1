@@ -33,6 +33,23 @@ pub const JOB_LEASE_SEC: u64 = 60;
 pub const DAG_TASK_LEASE_SEC: u64 = 90;
 
 // ============================================================================
+// Scheduler Policy (Protocol-v1, clean production semantics)
+// ============================================================================
+
+/// Heartbeat TTL for "online" miners used by the job-pool policy.
+/// Keep this aligned with your launcher heartbeat cadence + dashboard TTL.
+pub const NODE_ONLINE_TTL_SEC: u64 = 180;
+
+/// Maintain at least this many pending jobs (pool floor).
+pub const JOB_POOL_MIN: usize = 10;
+
+/// Hard cap to avoid unbounded memory growth.
+pub const JOB_POOL_MAX: usize = 200;
+
+/// Pool target factor: pending_jobs ~= online_miners * JOBS_PER_MINER
+pub const JOBS_PER_MINER: usize = 2;
+
+// ============================================================================
 // AppState + InnerState
 // ============================================================================
 
@@ -145,54 +162,118 @@ impl AppState {
         Self {
             inner: Arc::new(RwLock::new(inner)),
         }
-}
-
-pub async fn renew_dag_task_lease(
-    &self,
-    run_id: &str,
-    task_id: &str,
-    node_id: &str,
-) -> Result<u64, &'static str> {
-    let now = now_unix();
-    let mut s = self.inner.write().await;
-
-    // Optional aber mainnet-sinnvoll: node muss existieren
-    if !s.nodes.contains_key(node_id) {
-        return Err("node_not_found");
     }
 
-    let run = s.dag_runs.get_mut(run_id).ok_or("run_not_found")?;
+    // =========================================================================
+    // Protocol-v1 Job Pool (clean production scheduler)
+    // =========================================================================
 
-    // Wichtig: konsistent mit next/proof
-    Self::expire_dag_task_leases_locked(run, now);
+    /// Ensure a stable pool of Pending jobs exists based on currently online miners.
+    /// This avoids "job: null" when miners are online, without injecting fake jobs
+    /// inside the /jobs/next route itself.
+    pub async fn ensure_job_pool(&self) {
+        let now = now_unix();
+        let mut s = self.inner.write().await;
 
-    let t = run.tasks.get_mut(task_id).ok_or("task_not_found")?;
+        // Online miners = nodes fresh within TTL + role contains "miner"
+        let online_miners = s
+            .nodes
+            .values()
+            .filter(|n| now.saturating_sub(n.last_seen_unix) <= NODE_ONLINE_TTL_SEC)
+            .filter(|n| n.roles.iter().any(|r| r == "miner"))
+            .count();
 
-    if t.status != DagTaskStatus::Running {
-        return Err("task_not_running");
+        let pending = s
+            .jobs
+            .values()
+            .filter(|j| matches!(j.status, JobStatus::Pending))
+            .count();
+
+        // target pool size
+        let mut target = online_miners.saturating_mul(JOBS_PER_MINER);
+        if target < JOB_POOL_MIN {
+            target = JOB_POOL_MIN;
+        }
+        if target > JOB_POOL_MAX {
+            target = JOB_POOL_MAX;
+        }
+
+        if pending >= target {
+            return;
+        }
+
+        let to_create = target - pending;
+        for _ in 0..to_create {
+            let wu: u64 = rand::thread_rng().gen_range(500_000..=5_000_000);
+            let id = s.next_job_id;
+            s.next_job_id += 1;
+
+            let ts = now_unix();
+            s.jobs.insert(
+                id,
+                Job {
+                    id,
+                    work_units: wu,
+                    status: JobStatus::Pending,
+                    assigned_node: None,
+                    created_unix: ts,
+                    updated_unix: ts,
+                    assigned_unix: None,
+                    completed_unix: None,
+                    lease_expires_unix: None,
+                    is_demo: false,
+                },
+            );
+        }
     }
 
-    if t.assigned_node.as_deref() != Some(node_id) {
-        return Err("task_wrong_node");
+    // =========================================================================
+    // ComputeDAG: Task Lease Renew (unchanged)
+    // =========================================================================
+
+    pub async fn renew_dag_task_lease(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        node_id: &str,
+    ) -> Result<u64, &'static str> {
+        let now = now_unix();
+        let mut s = self.inner.write().await;
+
+        // Optional aber mainnet-sinnvoll: node muss existieren
+        if !s.nodes.contains_key(node_id) {
+            return Err("node_not_found");
+        }
+
+        let run = s.dag_runs.get_mut(run_id).ok_or("run_not_found")?;
+
+        // Wichtig: konsistent mit next/proof
+        Self::expire_dag_task_leases_locked(run, now);
+
+        let t = run.tasks.get_mut(task_id).ok_or("task_not_found")?;
+
+        if t.status != DagTaskStatus::Running {
+            return Err("task_not_running");
+        }
+
+        if t.assigned_node.as_deref() != Some(node_id) {
+            return Err("task_wrong_node");
+        }
+
+        let exp = t.lease_expires_unix.ok_or("lease_missing")?;
+        if now >= exp {
+            return Err("lease_expired");
+        }
+
+        let new_exp = now + DAG_TASK_LEASE_SEC;
+        t.lease_expires_unix = Some(new_exp);
+
+        Ok(new_exp)
     }
 
-    let exp = t.lease_expires_unix.ok_or("lease_missing")?;
-    if now >= exp {
-        return Err("lease_expired");
-    }
-
-    let new_exp = now + DAG_TASK_LEASE_SEC;
-    t.lease_expires_unix = Some(new_exp);
-
-    Ok(new_exp)
-}
-
-
-
-
-// ============================================================================
-// Demo Mode (Development Utilities)
-// ============================================================================
+    // =========================================================================
+    // Demo Mode (Development Utilities)
+    // =========================================================================
 
     /// Spawn demo nodes + demo jobs for UI testing.
     /// Safe for testnet/dev only (gated behind /debug routes).
@@ -285,8 +366,6 @@ pub async fn renew_dag_task_lease(
             demo_jobs,
         }
     }
-    
-
 
     // =========================================================================
     // Read Helpers
@@ -430,51 +509,57 @@ pub async fn renew_dag_task_lease(
             payload.roles.clone()
         };
 
-        let mut s = self.inner.write().await;
-        let node_id = payload.node_id.clone();
+        {
+            // IMPORTANT: keep lock scope minimal (no await inside write lock)
+            let mut s = self.inner.write().await;
+            let node_id = payload.node_id.clone();
 
-        let entry = s.nodes.entry(node_id.clone()).or_insert(Node {
-            node_id: node_id.clone(),
-            public_key_hex: payload.public_key_hex.clone(),
-            last_seen_unix: now,
-            latitude: payload.latitude,
-            longitude: payload.longitude,
-            country: payload.country.clone(),
-            roles: roles.clone(),
-            compute_profile: payload.compute_profile.clone(),
-            client_version: payload.client_version.clone(),
-        });
+            let entry = s.nodes.entry(node_id.clone()).or_insert(Node {
+                node_id: node_id.clone(),
+                public_key_hex: payload.public_key_hex.clone(),
+                last_seen_unix: now,
+                latitude: payload.latitude,
+                longitude: payload.longitude,
+                country: payload.country.clone(),
+                roles: roles.clone(),
+                compute_profile: payload.compute_profile.clone(),
+                client_version: payload.client_version.clone(),
+            });
 
-        entry.last_seen_unix = now;
-        entry.public_key_hex = payload.public_key_hex.clone();
-        entry.roles = roles;
-        entry.compute_profile = payload.compute_profile.clone();
-        entry.client_version = payload.client_version.clone();
+            entry.last_seen_unix = now;
+            entry.public_key_hex = payload.public_key_hex.clone();
+            entry.roles = roles;
+            entry.compute_profile = payload.compute_profile.clone();
+            entry.client_version = payload.client_version.clone();
 
-        if payload.latitude.is_some() {
-            entry.latitude = payload.latitude;
+            if payload.latitude.is_some() {
+                entry.latitude = payload.latitude;
+            }
+            if payload.longitude.is_some() {
+                entry.longitude = payload.longitude;
+            }
+            if payload.country.is_some() {
+                entry.country = payload.country;
+            }
+
+            // Ensure accounting maps exist
+            s.node_rewards.entry(node_id.clone()).or_insert(0);
+            s.node_last_block_reward.entry(node_id.clone()).or_insert(0);
+            s.node_cumulative_work.entry(node_id.clone()).or_insert(0);
+
+            // node_stats init/update
+            let st = s.node_stats.entry(node_id.clone()).or_insert(NodeStats {
+                node_id: node_id.clone(),
+                first_seen_unix: now,
+                last_seen_unix: now,
+                total_effective_work_units: 0,
+                verified_work_units: 0,
+            });
+            st.last_seen_unix = now;
         }
-        if payload.longitude.is_some() {
-            entry.longitude = payload.longitude;
-        }
-        if payload.country.is_some() {
-            entry.country = payload.country;
-        }
 
-        // Ensure accounting maps exist
-        s.node_rewards.entry(node_id.clone()).or_insert(0);
-        s.node_last_block_reward.entry(node_id.clone()).or_insert(0);
-        s.node_cumulative_work.entry(node_id.clone()).or_insert(0);
-
-        // node_stats init/update
-        let st = s.node_stats.entry(node_id.clone()).or_insert(NodeStats {
-            node_id: node_id.clone(),
-            first_seen_unix: now,
-            last_seen_unix: now,
-            total_effective_work_units: 0,
-            verified_work_units: 0,
-        });
-        st.last_seen_unix = now;
+        // Trigger pool after heartbeat (clean, no lock held)
+        self.ensure_job_pool().await;
     }
 
     // =========================================================================
@@ -522,6 +607,9 @@ pub async fn renew_dag_task_lease(
     }
 
     pub async fn assign_job(&self, node_id: &str) -> Option<JobLease> {
+        // Failsafe: ensure pool exists even if caller never heartbeats (still requires node existence)
+        self.ensure_job_pool().await;
+
         let now = now_unix();
         let mut s = self.inner.write().await;
 
@@ -950,97 +1038,95 @@ pub async fn renew_dag_task_lease(
         Self::expire_dag_task_leases_locked(run, now);
 
         while let Some(task_id) = run.ready_q.pop_front() {
-    let Some(t) = run.tasks.get_mut(&task_id) else {
-        continue;
-    };
-    if t.status != DagTaskStatus::Ready {
-        continue;
-    }
-
-    t.status = DagTaskStatus::Running;
-    t.assigned_node = Some(node_id.to_string());
-    t.assigned_unix = Some(now);
-    t.lease_expires_unix = Some(now + DAG_TASK_LEASE_SEC);
-
-    return Some(DagTaskLease {
-        run_id: run.run_id.clone(),
-        dag_id: run.dag_id.clone(),
-        task_id: t.task_id.clone(),
-        task_hash: t.task_hash.clone(),
-        work_units: t.work_units,
-        task_type: t.task_type.clone(),
-        lease_expires_unix: t.lease_expires_unix.unwrap_or(now + DAG_TASK_LEASE_SEC),
-    });
-}
-
-None
-       
-    }
-
-pub async fn complete_dag_task(
-    &self,
-    run_id: &str,
-    task_id: &str,
-    proof: DagTaskProofSubmitRequest,
-) -> Result<DagTaskProofSubmitResponse, &'static str> {
-    let now = now_unix();
-    let mut s = self.inner.write().await;
-
-    // Optional aber mainnet-sinnvoll: node muss existieren
-    if !s.nodes.contains_key(&proof.node_id) {
-        return Err("node_not_found");
-    }
-
-    let run = s.dag_runs.get_mut(run_id).ok_or("run_not_found")?;
-    Self::expire_dag_task_leases_locked(run, now);
-
-    let t = run.tasks.get_mut(task_id).ok_or("task_not_found")?;
-
-    if t.status != DagTaskStatus::Running {
-        return Err("task_not_running");
-    }
-    if t.assigned_node.as_deref() != Some(&proof.node_id) {
-        return Err("task_wrong_node");
-    }
-    if proof.work_units != t.work_units {
-        return Err("task_wrong_work_units");
-    }
-
-    // Mark completed (clean up ownership fields)
-    t.status = DagTaskStatus::Completed;
-    t.completed_unix = Some(now);
-    t.assigned_node = None;
-    t.assigned_unix = None;
-    t.lease_expires_unix = None;
-
-    // Unlock dependents
-    let mut unlocked = 0usize;
-    if let Some(children) = run.dependents.get(task_id).cloned() {
-        for c in children {
-            let rem = run.remaining_deps.get_mut(&c).ok_or("dag_state_corrupt")?;
-            if *rem > 0 {
-                *rem -= 1;
+            let Some(t) = run.tasks.get_mut(&task_id) else {
+                continue;
+            };
+            if t.status != DagTaskStatus::Ready {
+                continue;
             }
-            if *rem == 0 {
-                if let Some(ct) = run.tasks.get_mut(&c) {
-                    if ct.status == DagTaskStatus::Pending {
-                        ct.status = DagTaskStatus::Ready;
-                        run.ready_q.push_back(c.clone());
-                        unlocked += 1;
+
+            t.status = DagTaskStatus::Running;
+            t.assigned_node = Some(node_id.to_string());
+            t.assigned_unix = Some(now);
+            t.lease_expires_unix = Some(now + DAG_TASK_LEASE_SEC);
+
+            return Some(DagTaskLease {
+                run_id: run.run_id.clone(),
+                dag_id: run.dag_id.clone(),
+                task_id: t.task_id.clone(),
+                task_hash: t.task_hash.clone(),
+                work_units: t.work_units,
+                task_type: t.task_type.clone(),
+                lease_expires_unix: t.lease_expires_unix.unwrap_or(now + DAG_TASK_LEASE_SEC),
+            });
+        }
+
+        None
+    }
+
+    pub async fn complete_dag_task(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        proof: DagTaskProofSubmitRequest,
+    ) -> Result<DagTaskProofSubmitResponse, &'static str> {
+        let now = now_unix();
+        let mut s = self.inner.write().await;
+
+        // Optional aber mainnet-sinnvoll: node muss existieren
+        if !s.nodes.contains_key(&proof.node_id) {
+            return Err("node_not_found");
+        }
+
+        let run = s.dag_runs.get_mut(run_id).ok_or("run_not_found")?;
+        Self::expire_dag_task_leases_locked(run, now);
+
+        let t = run.tasks.get_mut(task_id).ok_or("task_not_found")?;
+
+        if t.status != DagTaskStatus::Running {
+            return Err("task_not_running");
+        }
+        if t.assigned_node.as_deref() != Some(&proof.node_id) {
+            return Err("task_wrong_node");
+        }
+        if proof.work_units != t.work_units {
+            return Err("task_wrong_work_units");
+        }
+
+        // Mark completed (clean up ownership fields)
+        t.status = DagTaskStatus::Completed;
+        t.completed_unix = Some(now);
+        t.assigned_node = None;
+        t.assigned_unix = None;
+        t.lease_expires_unix = None;
+
+        // Unlock dependents
+        let mut unlocked = 0usize;
+        if let Some(children) = run.dependents.get(task_id).cloned() {
+            for c in children {
+                let rem = run.remaining_deps.get_mut(&c).ok_or("dag_state_corrupt")?;
+                if *rem > 0 {
+                    *rem -= 1;
+                }
+                if *rem == 0 {
+                    if let Some(ct) = run.tasks.get_mut(&c) {
+                        if ct.status == DagTaskStatus::Pending {
+                            ct.status = DagTaskStatus::Ready;
+                            run.ready_q.push_back(c.clone());
+                            unlocked += 1;
+                        }
                     }
                 }
             }
         }
+
+        Ok(DagTaskProofSubmitResponse {
+            status: "accepted".to_string(),
+            run_id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            unlocked_ready: unlocked,
+        })
     }
-
-    Ok(DagTaskProofSubmitResponse {
-        status: "accepted".to_string(),
-        run_id: run_id.to_string(),
-        task_id: task_id.to_string(),
-        unlocked_ready: unlocked,
-    })
-}
-
 
     // =========================================================================
     // Mining Engine

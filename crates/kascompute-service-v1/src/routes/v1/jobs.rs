@@ -8,7 +8,7 @@ use crate::domain::models::{
     Job, JobsSummary, NextJobRequest, NextJobResponse, ProofSubmitRequest, RecentJobView,
 };
 use crate::state::AppState;
-use crate::util::resp::{ok, err_status_json};
+use crate::util::resp::{err_status_json, ok};
 
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()

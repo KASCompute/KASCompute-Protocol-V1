@@ -8,7 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::domain::models::{HeartbeatPayload, Node};
-use crate::state::{AppState, ACTIVE_WINDOW_SEC};
+use crate::state::{AppState, NODE_ONLINE_TTL_SEC};
 use crate::util::ip::client_ip_from_headers;
 use crate::util::resp::ok;
 use crate::util::time::now_unix;
@@ -35,7 +35,7 @@ async fn list_nodes(State(state): State<AppState>) -> impl axum::response::IntoR
         .into_iter()
         .map(|n| {
             let seconds = now.saturating_sub(n.last_seen_unix);
-            let online = seconds <= ACTIVE_WINDOW_SEC;
+            let online = seconds <= NODE_ONLINE_TTL_SEC;
 
             NodeView {
                 node: n,
