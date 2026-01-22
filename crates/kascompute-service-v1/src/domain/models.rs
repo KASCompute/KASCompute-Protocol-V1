@@ -4,7 +4,16 @@ use serde::{Deserialize, Serialize};
 pub struct Node {
     pub node_id: String,
     pub public_key_hex: String,
+
+    /// Global last seen (any role heartbeat)
     pub last_seen_unix: u64,
+
+    /// Role-specific last seen (future-proof: node vs miner)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_node_unix: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_miner_unix: Option<u64>,
+
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub country: Option<String>,

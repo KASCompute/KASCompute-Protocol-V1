@@ -90,10 +90,10 @@ pub struct InnerState {
     // ------------------------------------------------------------------------
     // ComputeDAG: Spec Registry + Runs (Mainnet-ready Scheduling Model)
     // ------------------------------------------------------------------------
-    pub dag_meta: HashMap<String, DagMeta>,      // dag_id -> meta
-    pub dag_specs: HashMap<String, DagSpec>,     // dag_id -> immutable spec
-    pub next_run_seq: u64,                       // monotonic run counter
-    pub dag_runs: HashMap<String, DagRunState>,  // run_id -> execution state
+    pub dag_meta: HashMap<String, DagMeta>,     // dag_id -> meta
+    pub dag_specs: HashMap<String, DagSpec>,    // dag_id -> immutable spec
+    pub next_run_seq: u64,                      // monotonic run counter
+    pub dag_runs: HashMap<String, DagRunState>, // run_id -> execution state
 }
 
 #[derive(Debug, Clone)]
@@ -169,18 +169,19 @@ impl AppState {
     // =========================================================================
 
     /// Ensure a stable pool of Pending jobs exists based on currently online miners.
-    /// This avoids "job: null" when miners are online, without injecting fake jobs
-    /// inside the /jobs/next route itself.
     pub async fn ensure_job_pool(&self) {
         let now = now_unix();
         let mut s = self.inner.write().await;
 
-        // Online miners = nodes fresh within TTL + role contains "miner"
+        // Online miners = miner-heartbeat fresh within TTL (role-specific!)
         let online_miners = s
             .nodes
             .values()
-            .filter(|n| now.saturating_sub(n.last_seen_unix) <= NODE_ONLINE_TTL_SEC)
-            .filter(|n| n.roles.iter().any(|r| r == "miner"))
+            .filter(|n| {
+                n.last_seen_miner_unix
+                    .map(|t| now.saturating_sub(t) <= NODE_ONLINE_TTL_SEC)
+                    .unwrap_or(false)
+            })
             .count();
 
         let pending = s
@@ -240,14 +241,11 @@ impl AppState {
         let now = now_unix();
         let mut s = self.inner.write().await;
 
-        // Optional aber mainnet-sinnvoll: node muss existieren
         if !s.nodes.contains_key(node_id) {
             return Err("node_not_found");
         }
 
         let run = s.dag_runs.get_mut(run_id).ok_or("run_not_found")?;
-
-        // Wichtig: konsistent mit next/proof
         Self::expire_dag_task_leases_locked(run, now);
 
         let t = run.tasks.get_mut(task_id).ok_or("task_not_found")?;
@@ -275,8 +273,6 @@ impl AppState {
     // Demo Mode (Development Utilities)
     // =========================================================================
 
-    /// Spawn demo nodes + demo jobs for UI testing.
-    /// Safe for testnet/dev only (gated behind /debug routes).
     pub async fn demo_spawn(&self, nodes: usize, jobs: usize) {
         let now = now_unix();
         let mut s = self.inner.write().await;
@@ -293,7 +289,11 @@ impl AppState {
                 Node {
                     node_id: node_id.clone(),
                     public_key_hex: format!("demo{:02}deadbeef", i + 1),
+
                     last_seen_unix: now,
+                    last_seen_node_unix: Some(now),
+                    last_seen_miner_unix: Some(now),
+
                     latitude: Some(lat),
                     longitude: Some(lon),
                     country: Some("DEMO".to_string()),
@@ -340,7 +340,6 @@ impl AppState {
         }
     }
 
-    /// Clear all demo artifacts.
     pub async fn demo_clear(&self) {
         let mut s = self.inner.write().await;
         s.demo_running = false;
@@ -354,7 +353,6 @@ impl AppState {
         s.jobs.retain(|_, j| !j.is_demo);
     }
 
-    /// Demo status for dashboards and debug endpoints.
     pub async fn demo_status(&self) -> DemoStatus {
         let s = self.inner.read().await;
         let demo_nodes = s.nodes.keys().filter(|k| k.starts_with("demo-")).count();
@@ -509,15 +507,21 @@ impl AppState {
             payload.roles.clone()
         };
 
+        let is_node = roles.iter().any(|r| r == "node");
+        let is_miner = roles.iter().any(|r| r == "miner");
+
         {
-            // IMPORTANT: keep lock scope minimal (no await inside write lock)
             let mut s = self.inner.write().await;
             let node_id = payload.node_id.clone();
 
             let entry = s.nodes.entry(node_id.clone()).or_insert(Node {
                 node_id: node_id.clone(),
                 public_key_hex: payload.public_key_hex.clone(),
+
                 last_seen_unix: now,
+                last_seen_node_unix: if is_node { Some(now) } else { None },
+                last_seen_miner_unix: if is_miner { Some(now) } else { None },
+
                 latitude: payload.latitude,
                 longitude: payload.longitude,
                 country: payload.country.clone(),
@@ -526,7 +530,17 @@ impl AppState {
                 client_version: payload.client_version.clone(),
             });
 
+            // global last seen
             entry.last_seen_unix = now;
+
+            // role-specific last seen (only bump if role present in this heartbeat)
+            if is_node {
+                entry.last_seen_node_unix = Some(now);
+            }
+            if is_miner {
+                entry.last_seen_miner_unix = Some(now);
+            }
+
             entry.public_key_hex = payload.public_key_hex.clone();
             entry.roles = roles;
             entry.compute_profile = payload.compute_profile.clone();
@@ -558,7 +572,6 @@ impl AppState {
             st.last_seen_unix = now;
         }
 
-        // Trigger pool after heartbeat (clean, no lock held)
         self.ensure_job_pool().await;
     }
 
@@ -607,7 +620,6 @@ impl AppState {
     }
 
     pub async fn assign_job(&self, node_id: &str) -> Option<JobLease> {
-        // Failsafe: ensure pool exists even if caller never heartbeats (still requires node existence)
         self.ensure_job_pool().await;
 
         let now = now_unix();
@@ -656,7 +668,6 @@ impl AppState {
         let ts = now_unix();
         let mut s = self.inner.write().await;
 
-        // expire old leases first
         Self::expire_leases_locked(&mut s, ts);
 
         let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
@@ -667,18 +678,15 @@ impl AppState {
             return Err("job_wrong_node");
         }
 
-        // finalize job
         job.status = JobStatus::Completed;
         job.updated_unix = ts;
         job.completed_unix = Some(ts);
 
-        // workload mode is informational only
         let mode = proof
             .workload_mode
             .clone()
             .unwrap_or_else(|| "sim".to_string());
 
-        // fallback for elapsed_ms
         let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
             if let Some(a) = job.assigned_unix {
                 (ts.saturating_sub(a)) * 1000
@@ -687,11 +695,9 @@ impl AppState {
             }
         });
 
-        // signature verification
         let mut sig_ok = false;
         let ts_msg = proof.timestamp_unix.unwrap_or(ts);
 
-        // optional replay protection ±60s
         if let Some(ts_sent) = proof.timestamp_unix {
             if ts.abs_diff(ts_sent) > 60 {
                 // keep sig_ok false
@@ -701,7 +707,6 @@ impl AppState {
         if let (Some(sig_hex), Some(node)) =
             (proof.signature_hex.clone(), s.nodes.get(&proof.node_id))
         {
-            // V1 verify: ed25519( sha256( json(payload) ) )
             let payload = ProofPayloadV1 {
                 node_id: proof.node_id.clone(),
                 job_id,
@@ -717,7 +722,6 @@ impl AppState {
 
             sig_ok = verify_proof_signature_v1(&node.public_key_hex, &sig_hex, &payload);
 
-            // fallback legacy
             if !sig_ok {
                 let legacy_msg = format!(
                     "pf|{}|{}|{}|{}",
@@ -727,12 +731,10 @@ impl AppState {
             }
         }
 
-        // strict verify only if explicitly declared
         if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
             return Err("invalid_signature");
         }
 
-        // effective work: bonus only if signature verified
         let effective_wu = if sig_ok {
             (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
         } else {
@@ -757,12 +759,10 @@ impl AppState {
 
         s.proofs.push(record.clone());
 
-        // cumulative work tracking (raw)
         *s.node_cumulative_work
             .entry(proof.node_id.clone())
             .or_insert(0) += proof.work_units;
 
-        // node stats
         let st = s.node_stats.entry(proof.node_id.clone()).or_insert(NodeStats {
             node_id: proof.node_id.clone(),
             first_seen_unix: ts,
@@ -1256,10 +1256,26 @@ impl AppState {
         let now = now_unix();
         let s = self.inner.read().await;
 
+        // Node online = node-role heartbeat fresh
         let active_nodes_90s = s
             .nodes
             .values()
-            .filter(|n| now.saturating_sub(n.last_seen_unix) <= ACTIVE_WINDOW_SEC)
+            .filter(|n| {
+                n.last_seen_node_unix
+                    .map(|t| now.saturating_sub(t) <= ACTIVE_WINDOW_SEC)
+                    .unwrap_or(false)
+            })
+            .count();
+
+        // Miner online = miner-role heartbeat fresh
+        let active_miners_90s = s
+            .nodes
+            .values()
+            .filter(|n| {
+                n.last_seen_miner_unix
+                    .map(|t| now.saturating_sub(t) <= ACTIVE_WINDOW_SEC)
+                    .unwrap_or(false)
+            })
             .count();
 
         let proofs_window: Vec<&ProofRecord> = s
@@ -1269,13 +1285,6 @@ impl AppState {
             .collect();
 
         let proofs_count = proofs_window.len();
-
-        let mut active_miners = HashSet::<String>::new();
-        for p in proofs_window.iter() {
-            if now.saturating_sub(p.timestamp_unix) <= ACTIVE_WINDOW_SEC {
-                active_miners.insert(p.node_id.clone());
-            }
-        }
 
         let mut completed_jobs = 0usize;
         let mut total_job_ms: u128 = 0;
@@ -1304,7 +1313,7 @@ impl AppState {
         Metrics {
             window_sec,
             active_nodes_90s,
-            active_miners_90s: active_miners.len(),
+            active_miners_90s,
             jobs_completed_window: completed_jobs,
             jobs_per_min,
             avg_job_ms,

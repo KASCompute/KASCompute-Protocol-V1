@@ -17,8 +17,16 @@ use crate::util::time::now_unix;
 struct NodeView {
     #[serde(flatten)]
     node: Node,
+
+    // overall
     is_online: bool,
     seconds_since_seen: u64,
+
+    // role-specific
+    is_node_online: bool,
+    is_miner_online: bool,
+    seconds_since_node_seen: Option<u64>,
+    seconds_since_miner_seen: Option<u64>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -34,13 +42,30 @@ async fn list_nodes(State(state): State<AppState>) -> impl axum::response::IntoR
     let out: Vec<NodeView> = nodes
         .into_iter()
         .map(|n| {
+            // overall
             let seconds = now.saturating_sub(n.last_seen_unix);
             let online = seconds <= NODE_ONLINE_TTL_SEC;
+
+            // role-specific
+            let node_secs = n.last_seen_node_unix.map(|t| now.saturating_sub(t));
+            let miner_secs = n.last_seen_miner_unix.map(|t| now.saturating_sub(t));
+
+            let node_online = node_secs
+                .map(|s| s <= NODE_ONLINE_TTL_SEC)
+                .unwrap_or(false);
+
+            let miner_online = miner_secs
+                .map(|s| s <= NODE_ONLINE_TTL_SEC)
+                .unwrap_or(false);
 
             NodeView {
                 node: n,
                 is_online: online,
                 seconds_since_seen: seconds,
+                is_node_online: node_online,
+                is_miner_online: miner_online,
+                seconds_since_node_seen: node_secs,
+                seconds_since_miner_seen: miner_secs,
             }
         })
         .collect();
