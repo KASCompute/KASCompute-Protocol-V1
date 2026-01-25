@@ -20,8 +20,10 @@ use crate::util::resp::{err_status_json, ok};
 /// - POST /v1/dags/submit
 /// - GET  /v1/dags
 /// - GET  /v1/dags/:dag_id
+/// - GET  /v1/dags/:dag_id/spec                  (NEW: return immutable spec nodes+edges)
 /// - POST /v1/dags/:dag_id/runs                  (create run)
 /// - GET  /v1/runs/:run_id                       (run view)
+/// - GET  /v1/runs/:run_id/tasks                 (NEW: return task list + status/lease)
 /// - POST /v1/runs/:run_id/next                  (lease next task)
 /// - POST /v1/runs/:run_id/tasks/:task_id/proof  (submit proof)
 /// - POST /v1/runs/:run_id/tasks/:task_id/renew  (renew lease)
@@ -30,8 +32,10 @@ pub fn router() -> Router<AppState> {
         .route("/dags/submit", post(submit_dag))
         .route("/dags", get(list_dags))
         .route("/dags/:dag_id", get(get_dag))
+        .route("/dags/:dag_id/spec", get(get_dag_spec)) // NEW
         .route("/dags/:dag_id/runs", post(create_run))
         .route("/runs/:run_id", get(get_run))
+        .route("/runs/:run_id/tasks", get(get_run_tasks)) // NEW
         .route("/runs/:run_id/next", post(next_task))
         .route("/runs/:run_id/tasks/:task_id/proof", post(submit_task_proof))
         .route("/runs/:run_id/tasks/:task_id/renew", post(renew_task))
@@ -60,6 +64,15 @@ async fn get_dag(Path(dag_id): Path<String>, State(state): State<AppState>) -> R
     }
 }
 
+/// NEW: return immutable spec (nodes+edges) for graph rendering
+async fn get_dag_spec(Path(dag_id): Path<String>, State(state): State<AppState>) -> Response {
+    match state.get_dag_spec_view(&dag_id).await {
+        Some(v) => ok(v).into_response(),
+        None => err_status_json(axum::http::StatusCode::NOT_FOUND, "dag_not_found", "not found")
+            .into_response(),
+    }
+}
+
 async fn create_run(Path(dag_id): Path<String>, State(state): State<AppState>) -> Response {
     match state.create_dag_run(&dag_id).await {
         Ok(run_id) => ok(ComputeDagRunCreateResponse { run_id }).into_response(),
@@ -70,6 +83,15 @@ async fn create_run(Path(dag_id): Path<String>, State(state): State<AppState>) -
 
 async fn get_run(Path(run_id): Path<String>, State(state): State<AppState>) -> Response {
     match state.get_dag_run_view(&run_id).await {
+        Some(v) => ok(v).into_response(),
+        None => err_status_json(axum::http::StatusCode::NOT_FOUND, "run_not_found", "not found")
+            .into_response(),
+    }
+}
+
+/// NEW: return task list (status/lease) for node coloring + details panel
+async fn get_run_tasks(Path(run_id): Path<String>, State(state): State<AppState>) -> Response {
+    match state.get_dag_run_tasks_view(&run_id).await {
         Some(v) => ok(v).into_response(),
         None => err_status_json(axum::http::StatusCode::NOT_FOUND, "run_not_found", "not found")
             .into_response(),
@@ -116,4 +138,3 @@ async fn renew_task(
             .into_response(),
     }
 }
-

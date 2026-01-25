@@ -37,7 +37,7 @@ pub const DAG_TASK_LEASE_SEC: u64 = 90;
 // ============================================================================
 
 /// Heartbeat TTL for "online" miners used by the job-pool policy.
-/// Keep this aligned with your launcher heartbeat cadence + dashboard TTL.
+
 pub const NODE_ONLINE_TTL_SEC: u64 = 180;
 
 /// Maintain at least this many pending jobs (pool floor).
@@ -842,6 +842,7 @@ impl AppState {
         Some(Self::compute_dag_view_locked(&s, dag_id))
     }
 
+
     fn compute_dag_view_locked(s: &InnerState, dag_id: &str) -> ComputeDagView {
         let meta = s.dag_meta.get(dag_id).expect("dag exists");
 
@@ -875,6 +876,77 @@ impl AppState {
             tasks_running: running,
         }
     }
+
+    fn dag_task_status_str(s: &DagTaskStatus) -> &'static str {
+        match s {
+            DagTaskStatus::Pending => "pending",
+            DagTaskStatus::Ready => "ready",
+            DagTaskStatus::Running => "running",
+            DagTaskStatus::Completed => "completed",
+            DagTaskStatus::Failed => "failed",
+        }
+    }
+
+    /// NEW: immutable spec for graph rendering
+    pub async fn get_dag_spec_view(&self, dag_id: &str) -> Option<serde_json::Value> {
+        let s = self.inner.read().await;
+        let meta = s.dag_meta.get(dag_id)?;
+        let spec = s.dag_specs.get(dag_id)?;
+
+        Some(serde_json::json!({
+            "dag_id": meta.dag_id,
+            "dag_root_hash": meta.dag_root_hash,
+            "name": meta.name,
+            "created_unix": meta.created_unix,
+            "tasks_total": meta.tasks_total,
+            "spec": {
+                "name": spec.name,
+                "nodes": spec.nodes,
+                "edges": spec.edges
+            }
+        }))
+    }
+
+    /// NEW: tasks list for run (status/lease) for UI coloring
+    pub async fn get_dag_run_tasks_view(&self, run_id: &str) -> Option<serde_json::Value> {
+        let s = self.inner.read().await;
+        let run = s.dag_runs.get(run_id)?;
+
+        let mut ids: Vec<String> = run.tasks.keys().cloned().collect();
+        ids.sort();
+
+        let tasks: Vec<serde_json::Value> = ids
+            .into_iter()
+            .filter_map(|task_id| {
+                let t = run.tasks.get(&task_id)?;
+                Some(serde_json::json!({
+                    "run_id": t.run_id,
+                    "dag_id": t.dag_id,
+                    "task_id": t.task_id,
+                    "task_hash": t.task_hash,
+                    "work_units": t.work_units,
+                    "task_type": t.task_type,
+                    "deps": t.deps,
+                    "status": Self::dag_task_status_str(&t.status),
+                    "assigned_node": t.assigned_node,
+                    "assigned_unix": t.assigned_unix,
+                    "lease_expires_unix": t.lease_expires_unix,
+                    "completed_unix": t.completed_unix
+                }))
+            })
+            .collect();
+
+        Some(serde_json::json!({
+            "run_id": run.run_id,
+            "dag_id": run.dag_id,
+            "dag_root_hash": run.dag_root_hash,
+            "name": run.name,
+            "created_unix": run.created_unix,
+            "tasks_total": run.tasks_total,
+            "tasks": tasks
+        }))
+    }
+
 
     // =========================================================================
     // ComputeDAG: Run Lifecycle
