@@ -1,8 +1,13 @@
-use axum::{Router, routing::{get, post}, extract::State, Json};
-use axum::http::StatusCode;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
-use crate::state::AppState;
+
 use crate::domain::models::{HeartbeatPayload, NextJobRequest, ProofSubmitRequest};
+use crate::state::AppState;
 use crate::util::time::now_unix;
 
 pub fn router() -> Router<AppState> {
@@ -31,10 +36,15 @@ pub fn router() -> Router<AppState> {
         .route("/api/metrics", get(metrics_old))
 }
 
-async fn heartbeat_old(State(state): State<AppState>, Json(payload): Json<HeartbeatPayload>) -> StatusCode {
+async fn heartbeat_old(
+    State(state): State<AppState>,
+    Json(payload): Json<HeartbeatPayload>,
+) -> StatusCode {
     // legacy heartbeat doesn't carry real client ip here; state will geo_lookup only if coords missing
     // fallback to 127.0.0.1; real deployments should use /v1/nodes/heartbeat which is proxy-aware.
-    state.upsert_node(payload, "127.0.0.1".parse().unwrap()).await;
+    state
+        .upsert_node(payload, "127.0.0.1".parse().unwrap())
+        .await;
     StatusCode::OK
 }
 
@@ -42,7 +52,10 @@ async fn nodes_old(State(state): State<AppState>) -> Json<Vec<crate::domain::mod
     Json(state.list_nodes().await)
 }
 
-async fn next_job_old(State(state): State<AppState>, Json(req): Json<NextJobRequest>) -> Json<serde_json::Value> {
+async fn next_job_old(
+    State(state): State<AppState>,
+    Json(req): Json<NextJobRequest>,
+) -> Json<serde_json::Value> {
     let lease = state.assign_job(&req.node_id).await;
     if let Some(job) = lease {
         Json(serde_json::json!({ "id": job.id, "work_units": job.work_units }))
@@ -56,30 +69,47 @@ struct ProofOldPayload {
     node_id: String,
     job_id: u64,
     work_units: u64,
-    #[serde(default)] workload_mode: Option<String>,
-    #[serde(default)] elapsed_ms: Option<u64>,
-    #[serde(default)] result_hash: Option<String>,
-    #[serde(default)] client_version: Option<String>,
-    #[serde(default)] timestamp_unix: Option<u64>,
-    #[serde(default)] signature_hex: Option<String>,
+    #[serde(default)]
+    workload_mode: Option<String>,
+    #[serde(default)]
+    elapsed_ms: Option<u64>,
+    #[serde(default)]
+    result_hash: Option<String>,
+    #[serde(default)]
+    client_version: Option<String>,
+    #[serde(default)]
+    timestamp_unix: Option<u64>,
+    #[serde(default)]
+    signature_hex: Option<String>,
 }
 
-async fn proof_old(State(state): State<AppState>, Json(p): Json<ProofOldPayload>) -> (StatusCode, Json<serde_json::Value>) {
+async fn proof_old(
+    State(state): State<AppState>,
+    Json(p): Json<ProofOldPayload>,
+) -> (StatusCode, Json<serde_json::Value>) {
     let req = ProofSubmitRequest {
-        node_id: p.node_id,
+        node_id: p.node_id.clone(),
         work_units: p.work_units,
+
+        // ✅ v1.1: legacy payload has no miner_id -> fallback to node_id
+        miner_id: Some(p.node_id),
+
         workload_mode: p.workload_mode,
         elapsed_ms: p.elapsed_ms,
         result_hash: p.result_hash,
         client_version: p.client_version,
         timestamp_unix: p.timestamp_unix,
         signature_hex: p.signature_hex,
-	proof_hash_hex: None,
-	public_key_hex: None,
+        proof_hash_hex: None,
+        public_key_hex: None,
     };
+
     match state.complete_job(p.job_id, req).await {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status":"ok"}))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"status":"error","message": e}))),
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "status": "error", "message": e })),
+        ),
     }
 }
 
@@ -91,7 +121,9 @@ async fn summary_old(State(state): State<AppState>) -> Json<crate::domain::model
     Json(state.summarize_jobs().await)
 }
 
-async fn recent_old(State(state): State<AppState>) -> Json<Vec<crate::domain::models::RecentJobView>> {
+async fn recent_old(
+    State(state): State<AppState>,
+) -> Json<Vec<crate::domain::models::RecentJobView>> {
     Json(state.list_recent_jobs_with_proofs(50).await)
 }
 
@@ -126,23 +158,33 @@ struct ApiHealth {
 async fn api_health_old(State(state): State<AppState>) -> Json<ApiHealth> {
     let now = now_unix();
     let s = state.inner.read().await;
+
     let nodes_total = s.nodes.len();
-    let nodes_online_90s = s.nodes.values().filter(|n| now.saturating_sub(n.last_seen_unix) <= 90).count();
+    let nodes_online_90s = s
+        .nodes
+        .values()
+        .filter(|n| now.saturating_sub(n.last_seen_unix) <= 90)
+        .count();
+
     let sum = {
-        let mut pending=0u64; let mut running=0u64; let mut completed=0u64;
+        let mut pending = 0u64;
+        let mut running = 0u64;
+        let mut completed = 0u64;
         for j in s.jobs.values() {
             match j.status {
-                crate::domain::models::JobStatus::Pending => pending +=1,
-                crate::domain::models::JobStatus::Running => running +=1,
-                crate::domain::models::JobStatus::Completed => completed +=1,
+                crate::domain::models::JobStatus::Pending => pending += 1,
+                crate::domain::models::JobStatus::Running => running += 1,
+                crate::domain::models::JobStatus::Completed => completed += 1,
                 crate::domain::models::JobStatus::Expired => {}
             }
         }
-        (pending,running,completed)
+        (pending, running, completed)
     };
+
     let uptime = now.saturating_sub(s.genesis_time);
-    Json(ApiHealth{
-        ok:true,
+
+    Json(ApiHealth {
+        ok: true,
         uptime_sec: uptime,
         nodes_total,
         nodes_online_90s,

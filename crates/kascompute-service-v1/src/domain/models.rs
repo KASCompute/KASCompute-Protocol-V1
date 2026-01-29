@@ -81,13 +81,27 @@ pub struct JobsSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofRecord {
+    /// Coordinator / distributor identity (job was leased to this id)
     pub node_id: String,
+
+    /// NEW (v1.1): Worker/miner identity (optional from client, resolved server-side)
+    /// In v1.1 we store it as a concrete String (never None) for easy accounting.
+    pub miner_id: String,
+
     pub job_id: u64,
 
     // raw work
     pub work_units: u64,
+
     // effective work (verified bonus applied)
     pub effective_work_units: u64,
+
+    // NEW (v1.1): Compute Units (CU) – future-proof for AI/rendering/batch
+    // v1.1 default: CU = effective_work_units
+    pub compute_units: u64,
+
+    // NEW (v1.1): prevents double counting in reward windows
+    pub rewarded_block: Option<u64>,
 
     pub timestamp_unix: u64,
 
@@ -123,6 +137,11 @@ pub struct JobLease {
 pub struct ProofSubmitRequest {
     pub node_id: String,
     pub work_units: u64,
+
+    /// NEW (v1.1): miner/worker identity (optional for backward compatibility)
+    /// If not provided, server will fallback to node_id.
+    #[serde(default)]
+    pub miner_id: Option<String>,
 
     #[serde(default)]
     pub workload_mode: Option<String>,

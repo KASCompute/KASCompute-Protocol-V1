@@ -37,7 +37,6 @@ pub const DAG_TASK_LEASE_SEC: u64 = 90;
 // ============================================================================
 
 /// Heartbeat TTL for "online" miners used by the job-pool policy.
-
 pub const NODE_ONLINE_TTL_SEC: u64 = 180;
 
 /// Maintain at least this many pending jobs (pool floor).
@@ -349,6 +348,7 @@ impl AppState {
         s.node_last_block_reward.retain(|k, _| !k.starts_with("demo-"));
         s.node_cumulative_work.retain(|k, _| !k.starts_with("demo-"));
         s.node_stats.retain(|k, _| !k.starts_with("demo-"));
+        // NOTE: proof.node_id ist coordinator-id; demo filter bleibt so
         s.proofs.retain(|p| !p.node_id.starts_with("demo-"));
         s.jobs.retain(|_, j| !j.is_demo);
     }
@@ -695,6 +695,13 @@ impl AppState {
             }
         });
 
+        // v1.1: resolve miner_id (worker) with backward compatible fallback
+        let coordinator_id = proof.node_id.clone();
+        let miner_id = proof
+            .miner_id
+            .clone()
+            .unwrap_or_else(|| coordinator_id.clone());
+
         let mut sig_ok = false;
         let ts_msg = proof.timestamp_unix.unwrap_or(ts);
 
@@ -741,13 +748,25 @@ impl AppState {
             proof.work_units
         };
 
+        // v1.1: compute units baseline (future-proof for AI/rendering/batch)
+        // default: CU == effective work units
+        let compute_units = effective_wu;
+
         let receipt = make_receipt(&proof.node_id, job_id, ts, proof.work_units);
 
         let record = ProofRecord {
-            node_id: proof.node_id.clone(),
+            // coordinator / node that leased the job
+            node_id: coordinator_id,
+            // worker/miner that executed it
+            miner_id,
+
             job_id,
             work_units: proof.work_units,
             effective_work_units: effective_wu,
+
+            compute_units,
+            rewarded_block: None,
+
             timestamp_unix: ts,
             workload_mode: mode,
             elapsed_ms,
@@ -841,7 +860,6 @@ impl AppState {
         }
         Some(Self::compute_dag_view_locked(&s, dag_id))
     }
-
 
     fn compute_dag_view_locked(s: &InnerState, dag_id: &str) -> ComputeDagView {
         let meta = s.dag_meta.get(dag_id).expect("dag exists");
@@ -946,7 +964,6 @@ impl AppState {
             "tasks": tasks
         }))
     }
-
 
     // =========================================================================
     // ComputeDAG: Run Lifecycle
