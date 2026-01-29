@@ -89,3 +89,8 @@ Thumbs.db
 ########################################
 secrets.*
 credentials.*
+
+# Visual Studio / IDE
+launcher/.vs/
+.vs/
+
