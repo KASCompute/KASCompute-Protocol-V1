@@ -1,520 +1,366 @@
-⚡ KASCompute — Protocol V1
+<p align="center">
 
+&nbsp; <img src="assets/banner.gif" alt="KASCompute Protocol V1" width="100%" />
 
+</p>
 
-Protocol V1 defines the first-generation off-chain compute protocol used by KASCompute.
 
 
+<h1 align="center">KASCompute Protocol V1</h1>
 
-It coordinates decentralized compute execution outside of Kaspa L1, while being explicitly designed to align with Kaspa’s future vProgs execution and settlement layer.
 
 
+<p align="center">
 
-Protocol V1 is minimal by design, deterministic, and built to evolve toward on-chain settlement without refactoring the core protocol.
+&nbsp; ⚡ Off-Chain Compute Layer aligned for Kaspa vProgs<br/>
 
+&nbsp; Cryptographic Proof-of-Compute • Real-Time Nodes • ComputeDAG Scheduling
 
+</p>
 
-🧩 Scope \& Responsibilities
 
 
+<p align="center">
 
-Protocol V1 currently handles:
+&nbsp; <a href="https://kascompute.org">Website</a> •
 
+&nbsp; <a href="https://dashboard.kascompute.org">Dashboard</a> •
 
+&nbsp; <a href="https://github.com/KASCompute">GitHub</a>
 
-🟢 Node presence \& heartbeats
+</p>
 
 
 
-⚙️ Job scheduling
+---
 
 
 
-🔐 Cryptographic Proof-of-Compute submission
+\## 🧬 What is KASCompute Protocol V1?
 
 
 
-📊 Metrics \& performance aggregation
+\*\*KASCompute Protocol V1\*\* is the backend/API layer of KASCompute — an experimental off-chain compute network designed to align with \*\*Kaspa’s upcoming vProgs execution and settlement model\*\*.
 
 
 
-🧠 ComputeDAG execution (task graphs with dependencies)
+It focuses on how decentralized compute can be:
 
 
 
-Important
+\- \*\*measured\*\*
 
+\- \*\*proven cryptographically\*\*
 
+\- \*\*tracked in real time\*\*
 
-Protocol V1 operates fully off-chain today,
+\- and later \*\*anchored / settled via vProgs\*\*
 
-but its data structures, hashing model, and cryptographic flows are vProgs-compatible by design.
 
 
+> This repository is infrastructure-first: \*\*how the system operates\*\*, not promises.
 
-🎯 Goals of Protocol V1
 
 
+---
 
-Deterministic Proof-of-Compute
 
 
+\## ✅ What already works today
 
-Simple, inspectable cryptography
 
 
+\### ⚙️ Network core
 
-Real-time observability
+\- \*\*Node \& miner presence\*\* via heartbeat (role-aware: `node` vs `miner`)
 
+\- \*\*Job scheduling\*\* (`/jobs/next`)
 
+\- \*\*Leasing model\*\* (job TTL / re-queue semantics)
 
-Minimal trust assumptions
 
 
+\### 🔐 Cryptographic Proof-of-Compute
 
-DAG-based execution for complex workloads
+Each proof is designed to be:
 
+\- deterministic payload
 
+\- \*\*SHA-256\*\* hash
 
-ZK-ready structure for future settlement
+\- \*\*Ed25519\*\* signature (identity-bound)
 
+\- verifiable receipts
 
 
-🔐 Proof-of-Compute (V1)
 
+Endpoints:
 
+\- \*\*Proof submission:\*\* `/jobs/proof`
 
-Each compute proof follows a strict, deterministic pipeline.
 
 
+> Important: cryptography is real — proofs are hashable, signable, and verifiable.
 
-Proof construction steps
 
 
+\### 🧩 ComputeDAG (Protocol V1)
 
-Create a deterministic JSON payload
+Mainnet-ready scheduling model for deterministic task graphs:
 
+\- submit immutable DAG spec (hash-derived IDs)
 
+\- create execution runs
 
-Serialize payload to bytes
+\- task leasing \& deterministic scheduling
 
+\- run/spec views for UI rendering
 
 
-Compute SHA-256(payload\_bytes)
 
+---
 
 
-Sign the hash using Ed25519
 
+\## ⚡ Architecture Overview (vProgs alignment)
 
 
-Attach public key for verification
 
+\*\*Kaspa L1 (BlockDAG)\*\*  
 
+└─ Finality \& Security
 
-📦 Proof Payload (example)
 
-{
 
-&nbsp; "node\_id": "kc\_node\_01",
+\*\*vProgs (Future Execution Layer)\*\*  
 
-&nbsp; "job\_id": 123,
+└─ Proof anchoring  
 
-&nbsp; "work\_units": 42,
+└─ Conditional settlement
 
-&nbsp; "workload\_mode": "sim",
 
-&nbsp; "elapsed\_ms": 150,
 
-&nbsp; "client\_version": "launcher-miner/0.2.0",
+\*\*KASCompute (Off-Chain Layer)\*\*  
 
-&nbsp; "ts": 1710000000
+├─ Node heartbeats  
 
-}
+├─ Job scheduling  
 
+├─ Proof-of-Compute  
 
+├─ ComputeDAG execution engine  
 
-✍️ Cryptographic Fields (sent with proof)
+└─ Dashboard + Launcher integrations
 
-{
 
-&nbsp; "proof\_hash": "hex",
 
-&nbsp; "signature": "hex",
+🔹 \*\*Today:\*\* off-chain R\&D prototype  
 
-&nbsp; "public\_key\_hex": "hex"
+🔹 \*\*Future:\*\* trust-minimized settlement via vProgs
 
-}
 
 
+---
 
 
 
-This enables:
+\## 💠 KCT Emission Model (Concept)
 
 
 
-Offline verification
+| Parameter | Value |
 
+|---|---:|
 
+| Total Supply | 10B KCT |
 
-Deterministic replay
+| Mining | 9B (90%) |
 
+| Treasury | 1B (10%) |
 
+| Start Reward | 200 KCT / block |
 
-Future on-chain anchoring
+| Decay | 1% monthly |
 
+| Duration | ~14 years |
 
 
-Trust-minimized validation
 
+Formula: `R(m) = 200 \* 0.99^(m)`  
 
+\*(Accounting/demo in current builds. Parameters may evolve.)\*
 
-🧠 ComputeDAG Execution (Protocol V1)
 
 
+---
 
-Protocol V1 includes a native DAG-based execution engine for structured compute workloads.
 
 
+\## 🖥 Live Dashboard (Prototype)
 
-A ComputeDAG consists of:
 
 
+🔗 https://dashboard.kascompute.org
 
-Tasks (nodes)
 
 
+\- node presence \& uptime
 
-Explicit dependencies (edges)
+\- proof stream (cryptographic data)
 
+\- work units \& performance
 
+\- emission modeling
 
-Deterministic task hashing
 
 
 
-Run-scoped execution state
 
+---
 
 
-Key properties
 
+\## 🚀 Quickstart
 
 
-Deterministic DAG root hash
 
+\### Requirements
 
+\- Rust (stable)
 
-Dependency-aware scheduling
+\- Cargo
 
 
 
-FIFO-ready queue per run
+\### Build \& run
 
+```bash
 
+cargo build --release
 
-Stateless workers (nodes do not coordinate with each other)
+cargo run --release
 
+Logs
 
+RUST\_LOG=info cargo run
 
-🔁 Task Leasing Model
+Tip: search the codebase for Router::new() to see the exact routes for this version.
 
 
 
-Each task is leased to a node for a fixed time window.
+🧱 Repository notes
 
+src/state.rs — core state, scheduler policy, proof acceptance, ComputeDAG runtime
 
 
-Tasks transition: Pending → Ready → Running → Completed
 
+src/domain/ — models/types
 
 
-A running task is owned by exactly one node
 
+src/util/ — receipts, signatures, hashing, geo, time helpers
 
 
-Leases expire automatically
 
+docs/ — protocol notes and v1.1 spec/checklist
 
 
-Leases can be renewed explicitly by the owning node
 
+assets/ — banners, diagrams, visuals
 
 
-This prevents:
 
+🟡 v1.1 (in progress): Rewards \& Accounting
 
+Work-in-progress branch:
 
-Stalled execution
 
 
+feature/v1.1-rewards-accounting
 
-Double execution
 
 
+Planned:
 
-Long-running task lockups
 
 
+miner/node split (80/20)
 
-🔄 Lease Renewal
 
 
+protocol fee (configurable)
 
-Nodes may extend an active lease:
 
 
+CU-based weighting (future-proof for AI/rendering/batch)
 
-POST /v1/runs/:run\_id/tasks/:task\_id/renew
 
 
+prevent double counting in reward window
 
 
 
-Rules:
+balance + stats endpoints
 
 
 
-Only the assigned node may renew
+See:
 
 
 
-Expired leases cannot be renewed
+docs/protocol-v1.1-rewards.md
 
 
 
-Renewal preserves deterministic execution
+docs/v1.1-checklist.md
 
 
 
-✅ Task Completion
+🔒 Official Project Notice
 
+This repository represents an official KASCompute codebase.
 
 
-Submitting a task proof:
 
+Official sources:
 
 
-POST /v1/runs/:run\_id/tasks/:task\_id/proof
 
+🌐 Website: https://kascompute.org
 
 
 
+💻 GitHub: https://github.com/KASCompute
 
-On completion:
 
 
+🖥 Dashboard: https://dashboard.kascompute.org
 
-Task is marked Completed
 
 
+The KASCompute name, logo, branding, and public communication are not covered by the MIT license.
 
-Lease is cleared
+Forking the code is allowed, but claiming affiliation with KASCompute is not.
 
 
 
-Dependent tasks are unlocked deterministically
 
 
+📫 Contact
 
-Newly ready tasks are queued
+🌐 https://kascompute.org
 
 
 
-🔌 API Endpoints (V1)
+🐦 https://x.com/KASCompute
 
-❤️ Heartbeat
 
-POST /v1/nodes/heartbeat
 
-
-
-
-
-Used for:
-
-
-
-Node presence
-
-
-
-Geo enrichment
-
-
-
-Uptime tracking
-
-
-
-Role signaling (node, miner)
-
-
-
-🧮 Job Scheduling
-
-POST /v1/jobs/next
-
-
-
-
-
-Returns:
-
-
-
-Job ID
-
-
-
-Work units
-
-
-
-Lease expiration
-
-
-
-📤 Proof Submission
-
-POST /v1/jobs/proof
-
-
-
-
-
-Accepts:
-
-
-
-Compute result
-
-
-
-Cryptographic proof
-
-
-
-Performance metadata
-
-
-
-Note
-
-Extra fields are ignored → forward compatibility guaranteed.
-
-
-
-🧠 ComputeDAG (V1)
-
-POST /v1/dags/submit
-
-POST /v1/dags/:dag\_id/runs
-
-POST /v1/runs/:run\_id/next
-
-POST /v1/runs/:run\_id/tasks/:task\_id/proof
-
-POST /v1/runs/:run\_id/tasks/:task\_id/renew
-
-GET  /v1/runs/:run\_id
-
-
-
-🧪 Current Status
-
-
-
-Protocol: Active
-
-
-
-ComputeDAG: Active
-
-
-
-Cryptography: Implemented (SHA-256 + Ed25519)
-
-
-
-Leasing \& Renewals: Implemented
-
-
-
-Settlement: Off-chain
-
-
-
-ZK Proofs: Not yet
-
-
-
-🧠 Verification (Future)
-
-
-
-Planned extensions:
-
-
-
-Stateless proof verification
-
-
-
-Optional replay protection
-
-
-
-vProgs-compatible anchoring format
-
-
-
-ZK verification layer (post-vProgs)
-
-
-
-📌 Design Notes
-
-
-
-Protocol V1 is intentionally minimal.
-
-
-
-Complexity is deferred to:
-
-
-
-Verification layers
-
-
-
-Settlement logic
-
-
-
-Future vProgs execution
-
-
-
-This keeps the protocol:
-
-
-
-Auditable
-
-
-
-Flexible
-
-
-
-Future-proof
+💬 https://t.me/KASCompute
 
 
 
 Founder: Tarik Kaya
 
-Built with ⚡ \& 💚 on Kaspa
+Built with ⚡ \& 💚 on Kaspa.
 
