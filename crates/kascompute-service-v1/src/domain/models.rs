@@ -84,8 +84,7 @@ pub struct ProofRecord {
     /// Coordinator / distributor identity (job was leased to this id)
     pub node_id: String,
 
-    /// NEW (v1.1): Worker/miner identity (optional from client, resolved server-side)
-    /// In v1.1 we store it as a concrete String (never None) for easy accounting.
+    /// NEW (v1.1): Worker/miner identity (always stored as concrete String)
     pub miner_id: String,
 
     pub job_id: u64,
@@ -215,10 +214,43 @@ pub struct RecentJobView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RewardView {
+    /// Backward compatible field name.
+    /// v1.1 semantics: this contains the miner_id (worker identity).
     pub node_id: String,
     pub effective_work_units: u64,
     pub verified_work_units: u64,
     pub share: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewardLedgerEntry {
+    pub block_height: u64,
+    pub timestamp_unix: u64,
+
+    /// Worker identity receiving rewards
+    pub miner_id: String,
+
+    /// Amount credited for this block (nanoKCT)
+    pub amount_nano: u64,
+
+    /// Share in this block (0..1)
+    pub share: f64,
+
+    /// Accounting weight used (v1.1: sum of compute_units in window)
+    pub compute_units: u64,
+
+    /// How many proofs contributed for this miner in the block window
+    pub proofs_count: usize,
+
+    /// Free text ("window_payout", etc.)
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MinerBalanceView {
+    pub miner_id: String,
+    pub total_mined_nano: u64,
+    pub last_block_reward_nano: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
