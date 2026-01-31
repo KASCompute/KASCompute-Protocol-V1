@@ -8,14 +8,15 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use crate::state::AppState;
 use crate::util::ip::client_ip_from_headers;
-use crate::util::resp::{ok, err_status_json};
+use crate::util::resp::{err_status_json, ok};
 
 pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/status", get(demo_status))
         .route("/start", post(demo_start))
         .route("/stop", post(demo_stop))
-	.route("/ip", get(debug_ip))
+        .route("/ip", get(debug_ip))
+        .route("/mine", post(debug_mine)) // ✅ NEW
 }
 
 fn is_local(headers: &HeaderMap) -> bool {
@@ -71,5 +72,22 @@ async fn debug_ip(headers: HeaderMap) -> impl axum::response::IntoResponse {
         "true_client_ip": headers.get("true-client-ip").and_then(|v| v.to_str().ok()),
     });
 
+    ok(v)
+}
+
+// ✅ NEW: mine 1 block + return mining stats (localhost-only)
+async fn debug_mine(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
+    if !is_local(&headers) {
+        return err_status_json(StatusCode::FORBIDDEN, "forbidden", "debug/mine is localhost-only");
+    }
+
+    state.mine_new_block().await;
+
+    // return updated mining stats for UI/testing convenience
+    let stats = state.mining_stats().await;
+    let v = serde_json::to_value(stats).unwrap();
     ok(v)
 }

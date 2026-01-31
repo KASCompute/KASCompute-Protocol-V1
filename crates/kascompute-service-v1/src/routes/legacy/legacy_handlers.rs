@@ -1,6 +1,7 @@
-use axum::{Router, routing::{get, post}, extract::State, Json};
+use axum::{extract::State, routing::{get, post}, Router, Json};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
+
 use crate::state::AppState;
 use crate::domain::models::{HeartbeatPayload, NextJobRequest, ProofSubmitRequest};
 use crate::util::time::now_unix;
@@ -54,6 +55,11 @@ async fn next_job_old(State(state): State<AppState>, Json(req): Json<NextJobRequ
 #[derive(Debug, Deserialize)]
 struct ProofOldPayload {
     node_id: String,
+
+    // ✅ allow sending miner_id even via legacy endpoint
+    #[serde(default)]
+    miner_id: Option<String>,
+
     job_id: u64,
     work_units: u64,
     #[serde(default)] workload_mode: Option<String>,
@@ -68,15 +74,20 @@ async fn proof_old(State(state): State<AppState>, Json(p): Json<ProofOldPayload>
     let req = ProofSubmitRequest {
         node_id: p.node_id,
         work_units: p.work_units,
+
+        // ✅ forward miner_id if provided; otherwise fallback happens in state.complete_job
+        miner_id: p.miner_id,
+
         workload_mode: p.workload_mode,
         elapsed_ms: p.elapsed_ms,
         result_hash: p.result_hash,
         client_version: p.client_version,
         timestamp_unix: p.timestamp_unix,
         signature_hex: p.signature_hex,
-	proof_hash_hex: None,
-	public_key_hex: None,
+        proof_hash_hex: None,
+        public_key_hex: None,
     };
+
     match state.complete_job(p.job_id, req).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status":"ok"}))),
         Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"status":"error","message": e}))),
@@ -126,8 +137,10 @@ struct ApiHealth {
 async fn api_health_old(State(state): State<AppState>) -> Json<ApiHealth> {
     let now = now_unix();
     let s = state.inner.read().await;
+
     let nodes_total = s.nodes.len();
     let nodes_online_90s = s.nodes.values().filter(|n| now.saturating_sub(n.last_seen_unix) <= 90).count();
+
     let sum = {
         let mut pending=0u64; let mut running=0u64; let mut completed=0u64;
         for j in s.jobs.values() {
@@ -140,7 +153,9 @@ async fn api_health_old(State(state): State<AppState>) -> Json<ApiHealth> {
         }
         (pending,running,completed)
     };
+
     let uptime = now.saturating_sub(s.genesis_time);
+
     Json(ApiHealth{
         ok:true,
         uptime_sec: uptime,

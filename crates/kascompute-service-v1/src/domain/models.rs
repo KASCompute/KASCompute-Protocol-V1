@@ -1,4 +1,10 @@
+// crates/domain/src/models.rs  (oder wo deine models.rs liegt)
+
 use serde::{Deserialize, Serialize};
+
+// =========================
+// Core Node / Heartbeat
+// =========================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -14,9 +20,13 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_miner_unix: Option<u64>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub longitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+
     pub roles: Vec<String>,              // ["node","miner"]
     pub compute_profile: Option<String>, // legacy compatibility
     pub client_version: Option<String>,
@@ -47,6 +57,10 @@ pub struct HeartbeatPayload {
     #[serde(default)]
     pub signature_hex: Option<String>,
 }
+
+// =========================
+// Jobs
+// =========================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JobStatus {
@@ -79,29 +93,6 @@ pub struct JobsSummary {
     pub total: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProofRecord {
-    pub node_id: String,
-    pub job_id: u64,
-
-    // raw work
-    pub work_units: u64,
-    // effective work (verified bonus applied)
-    pub effective_work_units: u64,
-
-    pub timestamp_unix: u64,
-
-    // proof meta
-    pub workload_mode: String, // "sim" | "hash"
-    pub elapsed_ms: u64,
-    pub result_hash: Option<String>,
-    pub client_version: Option<String>,
-    pub receipt: String,
-
-    // optional verification info
-    pub signature_verified: bool,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct NextJobRequest {
     pub node_id: String,
@@ -119,10 +110,55 @@ pub struct JobLease {
     pub lease_expires_unix: u64,
 }
 
+// =========================
+// Proofs (v1.1)
+// =========================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProofRecord {
+    /// Coordinator / distributor identity (job was leased to this id)
+    pub node_id: String,
+
+    /// NEW (v1.1): Worker/miner identity (always stored as concrete String)
+    pub miner_id: String,
+
+    pub job_id: u64,
+
+    // raw work
+    pub work_units: u64,
+
+    // effective work (verified bonus applied)
+    pub effective_work_units: u64,
+
+    // NEW (v1.1): Compute Units (CU) – future-proof for AI/rendering/batch
+    // v1.1 default: CU = effective_work_units
+    pub compute_units: u64,
+
+    // NEW (v1.1): prevents double counting in reward windows
+    pub rewarded_block: Option<u64>,
+
+    pub timestamp_unix: u64,
+
+    // proof meta
+    pub workload_mode: String, // "sim" | "hash"
+    pub elapsed_ms: u64,
+    pub result_hash: Option<String>,
+    pub client_version: Option<String>,
+    pub receipt: String,
+
+    // optional verification info
+    pub signature_verified: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProofSubmitRequest {
     pub node_id: String,
     pub work_units: u64,
+
+    /// NEW (v1.1): miner/worker identity (optional for backward compatibility)
+    /// If not provided, server will fallback to node_id.
+    #[serde(default)]
+    pub miner_id: Option<String>,
 
     #[serde(default)]
     pub workload_mode: Option<String>,
@@ -145,6 +181,10 @@ pub struct ProofSubmitRequest {
     #[serde(default)]
     pub public_key_hex: Option<String>,
 }
+
+// =========================
+// Mining / Rewards (compat + v1.1)
+// =========================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeMiningStats {
@@ -196,11 +236,52 @@ pub struct RecentJobView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RewardView {
+    /// Backward compatible field name.
+    /// v1.1 semantics: this contains the miner_id (worker identity).
     pub node_id: String,
     pub effective_work_units: u64,
     pub verified_work_units: u64,
     pub share: f64,
 }
+
+// =========================
+// Rewards / Ledger (v1.1)
+// =========================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewardLedgerEntry {
+    pub block_height: u64,
+    pub timestamp_unix: u64,
+
+    /// Worker identity receiving rewards
+    pub miner_id: String,
+
+    /// Amount credited for this block (nanoKCT)
+    pub amount_nano: u64,
+
+    /// Share in this block (0..1)
+    pub share: f64,
+
+    /// Accounting weight used (v1.1: sum of compute_units in window)
+    pub compute_units: u64,
+
+    /// How many proofs contributed for this miner in the block window
+    pub proofs_count: usize,
+
+    /// Free text ("window_payout", etc.)
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MinerBalanceView {
+    pub miner_id: String,
+    pub total_mined_nano: u64,
+    pub last_block_reward_nano: u64,
+}
+
+// =========================
+// Debug / Demo
+// =========================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DemoStatus {
@@ -208,6 +289,10 @@ pub struct DemoStatus {
     pub demo_nodes: usize,
     pub demo_jobs: usize,
 }
+
+// =========================
+// Metrics
+// =========================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Metrics {
