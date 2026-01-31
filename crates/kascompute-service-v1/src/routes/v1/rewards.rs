@@ -12,7 +12,7 @@ pub fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/rewards/leaderboard", get(leaderboard))
         .route("/rewards/balances", get(balances))
-        .route("/rewards/ledger/:miner_id", get(ledger_by_miner))
+        .route("/rewards/ledger/:miner_id", get(ledger))
 }
 
 async fn leaderboard(State(state): State<AppState>) -> impl axum::response::IntoResponse {
@@ -25,7 +25,7 @@ async fn balances(State(state): State<AppState>) -> impl axum::response::IntoRes
     ok(v)
 }
 
-async fn ledger_by_miner(
+async fn ledger(
     State(state): State<AppState>,
     Path(miner_id): Path<String>,
 ) -> impl axum::response::IntoResponse {

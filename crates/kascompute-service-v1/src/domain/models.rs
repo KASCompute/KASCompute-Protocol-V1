@@ -1,4 +1,10 @@
+// crates/domain/src/models.rs  (oder wo deine models.rs liegt)
+
 use serde::{Deserialize, Serialize};
+
+// =========================
+// Core Node / Heartbeat
+// =========================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -14,9 +20,13 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_miner_unix: Option<u64>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub longitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+
     pub roles: Vec<String>,              // ["node","miner"]
     pub compute_profile: Option<String>, // legacy compatibility
     pub client_version: Option<String>,
@@ -48,6 +58,10 @@ pub struct HeartbeatPayload {
     pub signature_hex: Option<String>,
 }
 
+// =========================
+// Jobs
+// =========================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JobStatus {
     Pending,
@@ -78,6 +92,27 @@ pub struct JobsSummary {
     pub expired: u64,
     pub total: u64,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct NextJobRequest {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NextJobResponse {
+    pub job: Option<JobLease>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobLease {
+    pub id: u64,
+    pub work_units: u64,
+    pub lease_expires_unix: u64,
+}
+
+// =========================
+// Proofs (v1.1)
+// =========================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofRecord {
@@ -116,23 +151,6 @@ pub struct ProofRecord {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NextJobRequest {
-    pub node_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct NextJobResponse {
-    pub job: Option<JobLease>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JobLease {
-    pub id: u64,
-    pub work_units: u64,
-    pub lease_expires_unix: u64,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct ProofSubmitRequest {
     pub node_id: String,
     pub work_units: u64,
@@ -163,6 +181,10 @@ pub struct ProofSubmitRequest {
     #[serde(default)]
     pub public_key_hex: Option<String>,
 }
+
+// =========================
+// Mining / Rewards (compat + v1.1)
+// =========================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeMiningStats {
@@ -222,6 +244,10 @@ pub struct RewardView {
     pub share: f64,
 }
 
+// =========================
+// Rewards / Ledger (v1.1)
+// =========================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RewardLedgerEntry {
     pub block_height: u64,
@@ -253,12 +279,20 @@ pub struct MinerBalanceView {
     pub last_block_reward_nano: u64,
 }
 
+// =========================
+// Debug / Demo
+// =========================
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DemoStatus {
     pub enabled: bool,
     pub demo_nodes: usize,
     pub demo_jobs: usize,
 }
+
+// =========================
+// Metrics
+// =========================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Metrics {

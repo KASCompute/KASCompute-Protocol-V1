@@ -55,6 +55,11 @@ async fn next_job_old(State(state): State<AppState>, Json(req): Json<NextJobRequ
 #[derive(Debug, Deserialize)]
 struct ProofOldPayload {
     node_id: String,
+
+    // ✅ allow sending miner_id even via legacy endpoint
+    #[serde(default)]
+    miner_id: Option<String>,
+
     job_id: u64,
     work_units: u64,
     #[serde(default)] workload_mode: Option<String>,
@@ -70,8 +75,8 @@ async fn proof_old(State(state): State<AppState>, Json(p): Json<ProofOldPayload>
         node_id: p.node_id,
         work_units: p.work_units,
 
-        // v1.1: legacy payload has no miner_id -> server will fallback to node_id
-        miner_id: None,
+        // ✅ forward miner_id if provided; otherwise fallback happens in state.complete_job
+        miner_id: p.miner_id,
 
         workload_mode: p.workload_mode,
         elapsed_ms: p.elapsed_ms,

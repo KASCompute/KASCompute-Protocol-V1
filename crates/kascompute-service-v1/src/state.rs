@@ -1443,6 +1443,9 @@ pub async fn mining_stats(&self) -> MiningStats {
         });
     }
 
+    // stable ordering for UI / diffs
+    per_node.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
+
     MiningStats {
         block_height: s.block_height,
         current_block_reward_kct: (reward_nano as f64) / (NANO as f64),
