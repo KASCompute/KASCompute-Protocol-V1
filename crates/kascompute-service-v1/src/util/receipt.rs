@@ -1,6 +1,6 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub fn make_receipt(node_id: &str, job_id: u64, ts: u64, work_units: u64) -> String {
     // Stable receipt hash
@@ -46,11 +46,18 @@ pub fn verify_ed25519_signature_hex(public_key_hex: &str, signature_hex: &str, m
 /* =========================
    Protocol V1 Proof Verify (Launcher-compatible)
    - Miner signs: ed25519( sha256( serde_json::to_vec(payload) ) )
+   - IMPORTANT: field order matters for serde_json::to_vec()
    ========================= */
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofPayloadV1 {
     pub node_id: String,
+
+    // ✅ v1.1+: worker identity
+    // MUST be here as 2nd field so JSON bytes match miner signing order
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub miner_id: Option<String>,
+
     pub job_id: u64,
     pub work_units: u64,
     pub workload_mode: String,

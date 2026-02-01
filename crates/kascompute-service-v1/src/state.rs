@@ -735,156 +735,164 @@ impl AppState {
     // Proof Submit + Signature Verification
     // =========================================================================
 
-    pub async fn complete_job(
-        &self,
-        job_id: u64,
-        proof: ProofSubmitRequest,
-    ) -> Result<ProofRecord, &'static str> {
-        let ts = now_unix();
-        let mut s = self.inner.write().await;
+pub async fn complete_job(
+    &self,
+    job_id: u64,
+    proof: ProofSubmitRequest,
+) -> Result<ProofRecord, &'static str> {
+    let ts = now_unix();
+    let mut s = self.inner.write().await;
 
-        Self::expire_leases_locked(&mut s, ts);
+    Self::expire_leases_locked(&mut s, ts);
 
-        let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
-        if !matches!(job.status, JobStatus::Running) {
-            return Err("job_not_running");
-        }
-        if job.assigned_node.as_ref() != Some(&proof.node_id) {
-            return Err("job_wrong_node");
-        }
+    let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
+    if !matches!(job.status, JobStatus::Running) {
+        return Err("job_not_running");
+    }
+    if job.assigned_node.as_ref() != Some(&proof.node_id) {
+        return Err("job_wrong_node");
+    }
 
-        job.status = JobStatus::Completed;
-        job.updated_unix = ts;
-        job.completed_unix = Some(ts);
+    job.status = JobStatus::Completed;
+    job.updated_unix = ts;
+    job.completed_unix = Some(ts);
 
-        let mode = proof
-            .workload_mode
-            .clone()
-            .unwrap_or_else(|| "sim".to_string());
+    let mode = proof.workload_mode.clone().unwrap_or_else(|| "sim".to_string());
 
-        let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
-            if let Some(a) = job.assigned_unix {
-                (ts.saturating_sub(a)) * 1000
-            } else {
-                0
-            }
-        });
-
-        // v1.1: resolve miner_id (worker) with backward compatible fallback
-        let coordinator_id = proof.node_id.clone();
-        let miner_id = proof
-            .miner_id
-            .clone()
-            .unwrap_or_else(|| coordinator_id.clone());
-
-        let mut sig_ok = false;
-        let ts_msg = proof.timestamp_unix.unwrap_or(ts);
-
-        if let Some(ts_sent) = proof.timestamp_unix {
-            if ts.abs_diff(ts_sent) > 60 {
-                // keep sig_ok false
-            }
-        }
-
-        if let (Some(sig_hex), Some(node)) =
-            (proof.signature_hex.clone(), s.nodes.get(&proof.node_id))
-        {
-            let payload = ProofPayloadV1 {
-                node_id: proof.node_id.clone(),
-                job_id,
-                work_units: proof.work_units,
-                workload_mode: mode.clone(),
-                elapsed_ms,
-                client_version: proof
-                    .client_version
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                ts: ts_msg,
-            };
-
-            sig_ok = verify_proof_signature_v1(&node.public_key_hex, &sig_hex, &payload);
-
-            if !sig_ok {
-                let legacy_msg = format!(
-                    "pf|{}|{}|{}|{}",
-                    proof.node_id, job_id, proof.work_units, ts_msg
-                );
-                sig_ok = verify_ed25519_signature_hex(&node.public_key_hex, &sig_hex, &legacy_msg);
-            }
-        }
-
-        if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
-            return Err("invalid_signature");
-        }
-
-        let effective_wu = if sig_ok {
-            (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
+    let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
+        if let Some(a) = job.assigned_unix {
+            (ts.saturating_sub(a)) * 1000
         } else {
-            proof.work_units
-        };
+            0
+        }
+    });
 
-        // v1.1: compute units baseline (future-proof for AI/rendering/batch)
-        // default: CU == effective work units
-        let compute_units = effective_wu;
+    // coordinator = job lease owner
+    let coordinator_id = proof.node_id.clone();
 
-        let receipt = make_receipt(&proof.node_id, job_id, ts, proof.work_units);
+    // worker/miner identity (optional for backward compatibility)
+    let miner_id_opt = proof.miner_id.clone(); // Option<String>
 
-        let record = ProofRecord {
-            node_id: coordinator_id,
-            miner_id: miner_id.clone(),
+    // for record + rewards we always store a concrete miner_id
+    let miner_id_for_record = miner_id_opt.clone().unwrap_or_else(|| coordinator_id.clone());
 
+    // signature timestamp
+    let ts_msg = proof.timestamp_unix.unwrap_or(ts);
+
+    // v1 signature verify
+    let mut sig_ok = false;
+
+    // Reject too old/new timestamps (optional hardening)
+    if let Some(ts_sent) = proof.timestamp_unix {
+        if ts.abs_diff(ts_sent) > 60 {
+            // keep sig_ok false
+        }
+    }
+
+    // Choose who signed:
+    // - if miner_id exists -> signer is miner_id
+    // - else legacy -> signer is node_id (coordinator)
+    let signer_lookup_id = miner_id_opt.as_deref().unwrap_or(&coordinator_id);
+
+    // Resolve pubkey:
+    // 1) proof.public_key_hex (if miner sends it)
+    // 2) node map entry by signer_lookup_id (miner id)
+    // 3) fallback to coordinator entry (legacy/debug)
+    let pubkey_hex_opt = proof
+        .public_key_hex
+        .clone()
+        .or_else(|| s.nodes.get(signer_lookup_id).map(|n| n.public_key_hex.clone()))
+        .or_else(|| s.nodes.get(&coordinator_id).map(|n| n.public_key_hex.clone()));
+
+    if let (Some(sig_hex), Some(pubkey_hex)) = (proof.signature_hex.clone(), pubkey_hex_opt) {
+        let payload = ProofPayloadV1 {
+            node_id: coordinator_id.clone(),
+            miner_id: miner_id_opt.clone(), // IMPORTANT: only Some if client signed it with miner_id
             job_id,
             work_units: proof.work_units,
-            effective_work_units: effective_wu,
-
-            compute_units,
-            rewarded_block: None,
-
-            timestamp_unix: ts,
-            workload_mode: mode,
+            workload_mode: mode.clone(),
             elapsed_ms,
-            result_hash: proof.result_hash.clone(),
-            client_version: proof.client_version.clone(),
-            receipt,
-            signature_verified: sig_ok,
+            client_version: proof.client_version.clone().unwrap_or_else(|| "unknown".to_string()),
+            ts: ts_msg,
         };
 
-        s.proofs.push(record.clone());
+        sig_ok = verify_proof_signature_v1(&pubkey_hex, &sig_hex, &payload);
 
-        // legacy counters (still track by coordinator/node_id)
-        *s.node_cumulative_work
-            .entry(proof.node_id.clone())
-            .or_insert(0) += proof.work_units;
-
-        let st = s.node_stats.entry(proof.node_id.clone()).or_insert(NodeStats {
-            node_id: proof.node_id.clone(),
-            first_seen_unix: ts,
-            last_seen_unix: ts,
-            total_effective_work_units: 0,
-            verified_work_units: 0,
-        });
-
-        st.last_seen_unix = ts;
-        st.total_effective_work_units += effective_wu;
-        if sig_ok {
-            st.verified_work_units += proof.work_units;
+        // legacy fallback only if miner_id was NOT provided (true legacy client)
+        if !sig_ok && miner_id_opt.is_none() {
+            let legacy_msg = format!(
+                "pf|{}|{}|{}|{}",
+                coordinator_id, job_id, proof.work_units, ts_msg
+            );
+            sig_ok = verify_ed25519_signature_hex(&pubkey_hex, &sig_hex, &legacy_msg);
         }
-
-        // v1.1 miner stats init/update
-        s.miner_rewards.entry(miner_id.clone()).or_insert(0);
-        s.miner_last_block_reward.entry(miner_id.clone()).or_insert(0);
-        *s.miner_cumulative_compute_units
-            .entry(miner_id.clone())
-            .or_insert(0) += compute_units;
-
-        s.miner_first_seen_unix
-            .entry(miner_id.clone())
-            .or_insert(ts);
-        s.miner_last_seen_unix.insert(miner_id.clone(), ts);
-        s.miner_ledger.entry(miner_id).or_insert_with(Vec::new);
-
-        Ok(record)
     }
+
+    if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
+        return Err("invalid_signature");
+    }
+
+    let effective_wu = if sig_ok {
+        (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
+    } else {
+        proof.work_units
+    };
+
+    let compute_units = effective_wu;
+
+    let receipt = make_receipt(&coordinator_id, job_id, ts, proof.work_units);
+
+    let record = ProofRecord {
+        node_id: coordinator_id.clone(),
+        miner_id: miner_id_for_record.clone(),
+
+        job_id,
+        work_units: proof.work_units,
+        effective_work_units: effective_wu,
+
+        compute_units,
+        rewarded_block: None,
+
+        timestamp_unix: ts,
+        workload_mode: mode,
+        elapsed_ms,
+        result_hash: proof.result_hash.clone(),
+        client_version: proof.client_version.clone(),
+        receipt,
+        signature_verified: sig_ok,
+    };
+
+    s.proofs.push(record.clone());
+
+    // legacy counters (still track by coordinator/node_id)
+    *s.node_cumulative_work.entry(coordinator_id.clone()).or_insert(0) += proof.work_units;
+
+    let st = s.node_stats.entry(coordinator_id.clone()).or_insert(NodeStats {
+        node_id: coordinator_id.clone(),
+        first_seen_unix: ts,
+        last_seen_unix: ts,
+        total_effective_work_units: 0,
+        verified_work_units: 0,
+    });
+
+    st.last_seen_unix = ts;
+    st.total_effective_work_units += effective_wu;
+    if sig_ok {
+        st.verified_work_units += proof.work_units;
+    }
+
+    // v1.1 miner stats init/update
+    s.miner_rewards.entry(miner_id_for_record.clone()).or_insert(0);
+    s.miner_last_block_reward.entry(miner_id_for_record.clone()).or_insert(0);
+    *s.miner_cumulative_compute_units.entry(miner_id_for_record.clone()).or_insert(0) += compute_units;
+
+    s.miner_first_seen_unix.entry(miner_id_for_record.clone()).or_insert(ts);
+    s.miner_last_seen_unix.insert(miner_id_for_record.clone(), ts);
+    s.miner_ledger.entry(miner_id_for_record).or_insert_with(Vec::new);
+
+    Ok(record)
+}
+
 
     // =========================================================================
     // ComputeDAG: Spec Registry
