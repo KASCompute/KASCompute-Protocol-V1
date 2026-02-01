@@ -749,6 +749,8 @@ pub async fn complete_job(
     if !matches!(job.status, JobStatus::Running) {
         return Err("job_not_running");
     }
+
+
     if job.assigned_node.as_ref() != Some(&proof.node_id) {
         return Err("job_wrong_node");
     }
@@ -758,7 +760,6 @@ pub async fn complete_job(
     job.completed_unix = Some(ts);
 
     let mode = proof.workload_mode.clone().unwrap_or_else(|| "sim".to_string());
-
     let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
         if let Some(a) = job.assigned_unix {
             (ts.saturating_sub(a)) * 1000
@@ -767,13 +768,11 @@ pub async fn complete_job(
         }
     });
 
-    // coordinator = job lease owner
+    // coordinator = lease owner
     let coordinator_id = proof.node_id.clone();
 
-    // worker/miner identity (optional for backward compatibility)
+    // worker identity
     let miner_id_opt = proof.miner_id.clone(); // Option<String>
-
-    // for record + rewards we always store a concrete miner_id
     let miner_id_for_record = miner_id_opt.clone().unwrap_or_else(|| coordinator_id.clone());
 
     // signature timestamp
@@ -782,22 +781,22 @@ pub async fn complete_job(
     // v1 signature verify
     let mut sig_ok = false;
 
-    // Reject too old/new timestamps (optional hardening)
+    // Optional hardening: timestamp drift
     if let Some(ts_sent) = proof.timestamp_unix {
         if ts.abs_diff(ts_sent) > 60 {
             // keep sig_ok false
         }
     }
 
-    // Choose who signed:
-    // - if miner_id exists -> signer is miner_id
-    // - else legacy -> signer is node_id (coordinator)
+    // Wer hat signiert?
+    // - wenn miner_id vorhanden: miner signiert
+    // - sonst legacy: coordinator signiert
     let signer_lookup_id = miner_id_opt.as_deref().unwrap_or(&coordinator_id);
 
-    // Resolve pubkey:
-    // 1) proof.public_key_hex (if miner sends it)
-    // 2) node map entry by signer_lookup_id (miner id)
-    // 3) fallback to coordinator entry (legacy/debug)
+    // Pubkey auflösen:
+    // 1) proof.public_key_hex (falls Miner mitsendet)
+    // 2) nodes[signer_lookup_id] (miner heartbeat)
+    // 3) nodes[coordinator_id] (legacy)
     let pubkey_hex_opt = proof
         .public_key_hex
         .clone()
@@ -805,9 +804,10 @@ pub async fn complete_job(
         .or_else(|| s.nodes.get(&coordinator_id).map(|n| n.public_key_hex.clone()));
 
     if let (Some(sig_hex), Some(pubkey_hex)) = (proof.signature_hex.clone(), pubkey_hex_opt) {
+
         let payload = ProofPayloadV1 {
             node_id: coordinator_id.clone(),
-            miner_id: miner_id_opt.clone(), // IMPORTANT: only Some if client signed it with miner_id
+            miner_id: miner_id_opt.clone(),
             job_id,
             work_units: proof.work_units,
             workload_mode: mode.clone(),
@@ -818,7 +818,7 @@ pub async fn complete_job(
 
         sig_ok = verify_proof_signature_v1(&pubkey_hex, &sig_hex, &payload);
 
-        // legacy fallback only if miner_id was NOT provided (true legacy client)
+        // legacy fallback nur wenn miner_id NICHT vorhanden
         if !sig_ok && miner_id_opt.is_none() {
             let legacy_msg = format!(
                 "pf|{}|{}|{}|{}",
@@ -839,7 +839,6 @@ pub async fn complete_job(
     };
 
     let compute_units = effective_wu;
-
     let receipt = make_receipt(&coordinator_id, job_id, ts, proof.work_units);
 
     let record = ProofRecord {
@@ -864,7 +863,7 @@ pub async fn complete_job(
 
     s.proofs.push(record.clone());
 
-    // legacy counters (still track by coordinator/node_id)
+    // legacy counters (by coordinator)
     *s.node_cumulative_work.entry(coordinator_id.clone()).or_insert(0) += proof.work_units;
 
     let st = s.node_stats.entry(coordinator_id.clone()).or_insert(NodeStats {
@@ -881,7 +880,7 @@ pub async fn complete_job(
         st.verified_work_units += proof.work_units;
     }
 
-    // v1.1 miner stats init/update
+    // v1.1 miner stats
     s.miner_rewards.entry(miner_id_for_record.clone()).or_insert(0);
     s.miner_last_block_reward.entry(miner_id_for_record.clone()).or_insert(0);
     *s.miner_cumulative_compute_units.entry(miner_id_for_record.clone()).or_insert(0) += compute_units;
@@ -1314,158 +1313,154 @@ pub async fn complete_job(
     // Mining Engine (v1.1: rewards paid to miner_id; with ledger + anti-doublecount)
     // =========================================================================
 
-fn kct_to_nano(kct: f64) -> u64 {
-    (kct * (NANO as f64)) as u64
-}
-
-pub async fn mine_new_block(&self) {
-    let now = now_unix();
-    let mut s = self.inner.write().await;
-
-    Self::expire_leases_locked(&mut s, now);
-
-    s.block_height += 1;
-    let current_block = s.block_height;
-
-    let months = months_since(s.genesis_time, now);
-    let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
-    let reward_nano = Self::kct_to_nano(reward_kct);
-
-    // Clone needed maps BEFORE iter_mut() to avoid E0502 borrow conflict
-    let miner_first_seen_unix = s.miner_first_seen_unix.clone();
-
-    // Build weight map per miner over last window, only for proofs not yet rewarded
-    let window = REWARD_WINDOW_SEC;
-    let mut weight_map: HashMap<String, u64> = HashMap::new();
-    let mut proof_counts: HashMap<String, usize> = HashMap::new();
-
-    // First pass: compute weights
-    for p in s.proofs.iter() {
-        if p.rewarded_block.is_some() {
-            continue;
-        }
-        if now < p.timestamp_unix || now - p.timestamp_unix > window {
-            continue;
-        }
-
-        // uptime gate for miner
-        let first_seen = *miner_first_seen_unix
-            .get(&p.miner_id)
-            .unwrap_or(&p.timestamp_unix);
-
-        let allow = now.saturating_sub(first_seen) >= MIN_UPTIME_FOR_REWARDS_SEC;
-        if !allow {
-            continue;
-        }
-
-        *weight_map.entry(p.miner_id.clone()).or_insert(0) += p.compute_units;
-        *proof_counts.entry(p.miner_id.clone()).or_insert(0) += 1;
+    fn kct_to_nano(kct: f64) -> u64 {
+        (kct * (NANO as f64)) as u64
     }
 
-    let total_cu: u64 = weight_map.values().sum();
+    pub async fn mine_new_block(&self) {
+        let now = now_unix();
+        let mut s = self.inner.write().await;
 
-    // reset last block rewards
-    s.miner_last_block_reward.clear();
-    s.node_last_block_reward.clear(); // legacy
+        Self::expire_leases_locked(&mut s, now);
 
-    // For testnet: keep emission monotonic.
-    s.total_emitted_nano += reward_nano;
+        s.block_height += 1;
+        let current_block = s.block_height;
 
-    if total_cu == 0 {
-        return;
-    }
+        let months = months_since(s.genesis_time, now);
+        let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
+        let reward_nano = Self::kct_to_nano(reward_kct);
 
-    // Second pass: pay miners + ledger
-    for (miner_id, cu) in weight_map.iter() {
-        let share = (*cu as f64) / (total_cu as f64);
-        let amount = (reward_nano as f64 * share) as u64;
+        // Clone needed maps BEFORE iter_mut() to avoid E0502 borrow conflict
+        let miner_first_seen_unix = s.miner_first_seen_unix.clone();
 
-        *s.miner_rewards.entry(miner_id.clone()).or_insert(0) += amount;
-        s.miner_last_block_reward.insert(miner_id.clone(), amount);
+        // Build weight map per miner over last window, only for proofs not yet rewarded
+        let window = REWARD_WINDOW_SEC;
+        let mut weight_map: HashMap<String, u64> = HashMap::new();
+        let mut proof_counts: HashMap<String, usize> = HashMap::new();
 
-        // ledger entry
-        let entry = RewardLedgerEntry {
-            block_height: current_block,
-            timestamp_unix: now,
-            miner_id: miner_id.clone(),
-            amount_nano: amount,
-            share,
-            compute_units: *cu,
-            proofs_count: *proof_counts.get(miner_id).unwrap_or(&0),
-            reason: "window_payout".to_string(),
-        };
+        // First pass: compute weights
+        for p in s.proofs.iter() {
+            if p.rewarded_block.is_some() {
+                continue;
+            }
+            if now < p.timestamp_unix || now - p.timestamp_unix > window {
+                continue;
+            }
 
-        s.miner_ledger
-            .entry(miner_id.clone())
-            .or_insert_with(Vec::new)
-            .push(entry);
-    }
+            // uptime gate for miner
+            let first_seen = *miner_first_seen_unix
+                .get(&p.miner_id)
+                .unwrap_or(&p.timestamp_unix);
 
-    // Third pass: mark proofs as rewarded to prevent double counting
-    // Use the cloned miner_first_seen_unix to avoid borrowing `s` immutably here.
-    for p in s.proofs.iter_mut() {
-        if p.rewarded_block.is_some() {
-            continue;
-        }
-        if now < p.timestamp_unix || now - p.timestamp_unix > window {
-            continue;
+            let allow = now.saturating_sub(first_seen) >= MIN_UPTIME_FOR_REWARDS_SEC;
+            if !allow {
+                continue;
+            }
+
+            *weight_map.entry(p.miner_id.clone()).or_insert(0) += p.compute_units;
+            *proof_counts.entry(p.miner_id.clone()).or_insert(0) += 1;
         }
 
-        let first_seen = *miner_first_seen_unix
-            .get(&p.miner_id)
-            .unwrap_or(&p.timestamp_unix);
+        let total_cu: u64 = weight_map.values().sum();
 
-        let allow = now.saturating_sub(first_seen) >= MIN_UPTIME_FOR_REWARDS_SEC;
-        if !allow {
-            continue;
+        // reset last block rewards
+        s.miner_last_block_reward.clear();
+        s.node_last_block_reward.clear(); // legacy
+
+        // For testnet: keep emission monotonic.
+        s.total_emitted_nano += reward_nano;
+
+        if total_cu == 0 {
+            return;
         }
 
-        p.rewarded_block = Some(current_block);
+        // Second pass: pay miners + ledger
+        for (miner_id, cu) in weight_map.iter() {
+            let share = (*cu as f64) / (total_cu as f64);
+            let amount = (reward_nano as f64 * share) as u64;
+
+            *s.miner_rewards.entry(miner_id.clone()).or_insert(0) += amount;
+            s.miner_last_block_reward.insert(miner_id.clone(), amount);
+
+            // ledger entry
+            let entry = RewardLedgerEntry {
+                block_height: current_block,
+                timestamp_unix: now,
+                miner_id: miner_id.clone(),
+                amount_nano: amount,
+                share,
+                compute_units: *cu,
+                proofs_count: *proof_counts.get(miner_id).unwrap_or(&0),
+                reason: "window_payout".to_string(),
+            };
+
+            s.miner_ledger
+                .entry(miner_id.clone())
+                .or_insert_with(Vec::new)
+                .push(entry);
+        }
+
+        // Third pass: mark proofs as rewarded to prevent double counting
+        for p in s.proofs.iter_mut() {
+            if p.rewarded_block.is_some() {
+                continue;
+            }
+            if now < p.timestamp_unix || now - p.timestamp_unix > window {
+                continue;
+            }
+
+            let first_seen = *miner_first_seen_unix
+                .get(&p.miner_id)
+                .unwrap_or(&p.timestamp_unix);
+
+            let allow = now.saturating_sub(first_seen) >= MIN_UPTIME_FOR_REWARDS_SEC;
+            if !allow {
+                continue;
+            }
+
+            p.rewarded_block = Some(current_block);
+        }
     }
-}
 
-pub async fn mining_stats(&self) -> MiningStats {
-    let now = now_unix();
-    let s = self.inner.read().await;
+    pub async fn mining_stats(&self) -> MiningStats {
+        let now = now_unix();
+        let s = self.inner.read().await;
 
-    let months = months_since(s.genesis_time, now);
-    let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
-    let reward_nano = Self::kct_to_nano(reward_kct);
+        let months = months_since(s.genesis_time, now);
+        let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
+        let reward_nano = Self::kct_to_nano(reward_kct);
 
-    // For backward compatibility: expose miners under per_node[] (node_id field contains miner_id)
-    let mut per_node = Vec::new();
-    for (miner_id, total) in s.miner_rewards.iter() {
-        let last = *s.miner_last_block_reward.get(miner_id).unwrap_or(&0);
-        let cumulative_work = *s
-            .miner_cumulative_compute_units
-            .get(miner_id)
-            .unwrap_or(&0);
+        // For backward compatibility: expose miners under per_node[] (node_id field contains miner_id)
+        let mut per_node = Vec::new();
+        for (miner_id, total) in s.miner_rewards.iter() {
+            let last = *s.miner_last_block_reward.get(miner_id).unwrap_or(&0);
+            let cumulative_work = *s
+                .miner_cumulative_compute_units
+                .get(miner_id)
+                .unwrap_or(&0);
 
-        // share_pct is "last reward window share" is not stored; set 0 for now (UI can use ledger)
-        per_node.push(NodeMiningStats {
-            node_id: miner_id.clone(),
-            total_mined_nano: *total,
-            last_block_reward_nano: last,
-            hashrate_share_pct: 0.0,
-            cumulative_work_units: cumulative_work,
-        });
+            per_node.push(NodeMiningStats {
+                node_id: miner_id.clone(),
+                total_mined_nano: *total,
+                last_block_reward_nano: last,
+                hashrate_share_pct: 0.0,
+                cumulative_work_units: cumulative_work,
+            });
+        }
+
+        per_node.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
+
+        MiningStats {
+            block_height: s.block_height,
+            current_block_reward_kct: (reward_nano as f64) / (NANO as f64),
+            current_block_reward_nano: reward_nano,
+            month_index: months,
+            total_emitted_nano: s.total_emitted_nano,
+            per_node,
+            timestamp: now,
+            reward_window_sec: REWARD_WINDOW_SEC,
+        }
     }
-
-    // stable ordering for UI / diffs
-    per_node.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
-
-    MiningStats {
-        block_height: s.block_height,
-        current_block_reward_kct: (reward_nano as f64) / (NANO as f64),
-        current_block_reward_nano: reward_nano,
-        month_index: months,
-        total_emitted_nano: s.total_emitted_nano,
-        per_node,
-        timestamp: now,
-        reward_window_sec: REWARD_WINDOW_SEC,
-    }
-}
-
 
     // =========================================================================
     // Metrics
