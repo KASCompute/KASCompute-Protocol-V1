@@ -19,6 +19,10 @@ use crate::util::time::{months_since, now_unix};
 
 pub const NANO: u64 = 100_000_000; // 1 KCT = 100_000_000 nanoKCT
 pub const START_REWARD_KCT: f64 = 200.0;
+
+pub const MINER_REWARD_PCT: u64 = 80;
+pub const NODE_REWARD_PCT: u64 = 20;
+
 pub const MONTHLY_DECAY: f64 = 0.99; // -1% per month
 pub const VERIFIED_BONUS_MULT: f64 = 1.10;
 
@@ -1317,72 +1321,106 @@ pub async fn complete_job(
         (kct * (NANO as f64)) as u64
     }
 
-    pub async fn mine_new_block(&self) {
-        let now = now_unix();
-        let mut s = self.inner.write().await;
+pub async fn mine_new_block(&self) {
+    let now = now_unix();
+    let mut s = self.inner.write().await;
 
-        Self::expire_leases_locked(&mut s, now);
+    Self::expire_leases_locked(&mut s, now);
 
-        s.block_height += 1;
-        let current_block = s.block_height;
+    s.block_height += 1;
+    let current_block = s.block_height;
 
-        let months = months_since(s.genesis_time, now);
-        let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
-        let reward_nano = Self::kct_to_nano(reward_kct);
+    let months = months_since(s.genesis_time, now);
+    let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
+    let reward_nano = Self::kct_to_nano(reward_kct);
 
-        // Clone needed maps BEFORE iter_mut() to avoid E0502 borrow conflict
-        let miner_first_seen_unix = s.miner_first_seen_unix.clone();
+    // ✅ Split 80/20 (integer-safe)
+    let miner_pool_nano: u64 =
+        ((reward_nano as u128) * (MINER_REWARD_PCT as u128) / 100u128) as u64;
+    let node_pool_nano: u64 = reward_nano.saturating_sub(miner_pool_nano);
 
-        // Build weight map per miner over last window, only for proofs not yet rewarded
-        let window = REWARD_WINDOW_SEC;
-        let mut weight_map: HashMap<String, u64> = HashMap::new();
-        let mut proof_counts: HashMap<String, usize> = HashMap::new();
+    // Clone needed maps BEFORE iterating to avoid borrow conflicts
+    let miner_first_seen_unix = s.miner_first_seen_unix.clone();
 
-        // First pass: compute weights
-        for p in s.proofs.iter() {
-            if p.rewarded_block.is_some() {
-                continue;
-            }
-            if now < p.timestamp_unix || now - p.timestamp_unix > window {
-                continue;
-            }
+    // For node uptime gate (coordinator): use node_stats.first_seen_unix
+    let node_first_seen_unix: HashMap<String, u64> = s
+        .node_stats
+        .iter()
+        .map(|(id, st)| (id.clone(), st.first_seen_unix))
+        .collect();
 
-            // uptime gate for miner
-            let first_seen = *miner_first_seen_unix
-                .get(&p.miner_id)
-                .unwrap_or(&p.timestamp_unix);
+    // Build weight maps over last window, only for proofs not yet rewarded
+    let window = REWARD_WINDOW_SEC;
 
-            let allow = now.saturating_sub(first_seen) >= MIN_UPTIME_FOR_REWARDS_SEC;
-            if !allow {
-                continue;
-            }
+    let mut miner_weight_map: HashMap<String, u64> = HashMap::new();
+    let mut miner_proof_counts: HashMap<String, usize> = HashMap::new();
 
-            *weight_map.entry(p.miner_id.clone()).or_insert(0) += p.compute_units;
-            *proof_counts.entry(p.miner_id.clone()).or_insert(0) += 1;
+    let mut node_weight_map: HashMap<String, u64> = HashMap::new();
+    let mut node_proof_counts: HashMap<String, usize> = HashMap::new();
+
+    for p in s.proofs.iter() {
+        if p.rewarded_block.is_some() {
+            continue;
+        }
+        if now < p.timestamp_unix || now - p.timestamp_unix > window {
+            continue;
         }
 
-        let total_cu: u64 = weight_map.values().sum();
+        // ----- Miner uptime gate
+        let first_seen_miner = *miner_first_seen_unix
+            .get(&p.miner_id)
+            .unwrap_or(&p.timestamp_unix);
 
-        // reset last block rewards
-        s.miner_last_block_reward.clear();
-        s.node_last_block_reward.clear(); // legacy
-
-        // For testnet: keep emission monotonic.
-        s.total_emitted_nano += reward_nano;
-
-        if total_cu == 0 {
-            return;
+        let miner_allow = now.saturating_sub(first_seen_miner) >= MIN_UPTIME_FOR_REWARDS_SEC;
+        if miner_allow {
+            *miner_weight_map.entry(p.miner_id.clone()).or_insert(0) += p.compute_units;
+            *miner_proof_counts.entry(p.miner_id.clone()).or_insert(0) += 1;
         }
 
-        // Second pass: pay miners + ledger
-        for (miner_id, cu) in weight_map.iter() {
-            let share = (*cu as f64) / (total_cu as f64);
-            let amount = (reward_nano as f64 * share) as u64;
+        // ----- Node uptime gate (coordinator)
+        let first_seen_node = *node_first_seen_unix
+            .get(&p.node_id)
+            .unwrap_or(&p.timestamp_unix);
+
+        let node_allow = now.saturating_sub(first_seen_node) >= MIN_UPTIME_FOR_REWARDS_SEC;
+        if node_allow {
+            *node_weight_map.entry(p.node_id.clone()).or_insert(0) += p.compute_units;
+            *node_proof_counts.entry(p.node_id.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let miner_total_cu: u64 = miner_weight_map.values().sum();
+    let node_total_cu: u64 = node_weight_map.values().sum();
+
+    // reset last block rewards
+    s.miner_last_block_reward.clear();
+    s.node_last_block_reward.clear();
+
+    // For testnet: keep emission monotonic (full reward counts as emitted)
+    s.total_emitted_nano = s.total_emitted_nano.saturating_add(reward_nano);
+
+    // If nobody eligible
+    if miner_total_cu == 0 && node_total_cu == 0 {
+        return;
+    }
+
+    // helper payout
+    let payout_from_pool = |pool_nano: u64, part_cu: u64, total_cu: u64| -> u64 {
+        if pool_nano == 0 || total_cu == 0 {
+            return 0;
+        }
+        ((pool_nano as u128) * (part_cu as u128) / (total_cu as u128)) as u64
+    };
+
+    // ✅ Pay miners (80%) + ledger
+    if miner_total_cu > 0 && miner_pool_nano > 0 {
+        for (miner_id, cu) in miner_weight_map.iter() {
+            let share = (*cu as f64) / (miner_total_cu as f64);
+            let amount = payout_from_pool(miner_pool_nano, *cu, miner_total_cu);
 
             *s.miner_rewards.entry(miner_id.clone()).or_insert(0) += amount;
             s.miner_last_block_reward.insert(miner_id.clone(), amount);
 
-            // ledger entry
             let entry = RewardLedgerEntry {
                 block_height: current_block,
                 timestamp_unix: now,
@@ -1390,7 +1428,7 @@ pub async fn complete_job(
                 amount_nano: amount,
                 share,
                 compute_units: *cu,
-                proofs_count: *proof_counts.get(miner_id).unwrap_or(&0),
+                proofs_count: *miner_proof_counts.get(miner_id).unwrap_or(&0),
                 reason: "window_payout".to_string(),
             };
 
@@ -1399,28 +1437,46 @@ pub async fn complete_job(
                 .or_insert_with(Vec::new)
                 .push(entry);
         }
+    }
 
-        // Third pass: mark proofs as rewarded to prevent double counting
-        for p in s.proofs.iter_mut() {
-            if p.rewarded_block.is_some() {
-                continue;
-            }
-            if now < p.timestamp_unix || now - p.timestamp_unix > window {
-                continue;
-            }
+    // ✅ Pay nodes (20%) into legacy maps
+    if node_total_cu > 0 && node_pool_nano > 0 {
+        for (node_id, cu) in node_weight_map.iter() {
+            let amount = payout_from_pool(node_pool_nano, *cu, node_total_cu);
 
-            let first_seen = *miner_first_seen_unix
-                .get(&p.miner_id)
-                .unwrap_or(&p.timestamp_unix);
+            *s.node_rewards.entry(node_id.clone()).or_insert(0) += amount;
+            s.node_last_block_reward.insert(node_id.clone(), amount);
 
-            let allow = now.saturating_sub(first_seen) >= MIN_UPTIME_FOR_REWARDS_SEC;
-            if !allow {
-                continue;
-            }
+            // optional: ledger-like info for nodes (not required)
+            let _ = node_proof_counts.get(node_id);
+        }
+    }
 
+    // mark proofs rewarded (prevents double count)
+    for p in s.proofs.iter_mut() {
+        if p.rewarded_block.is_some() {
+            continue;
+        }
+        if now < p.timestamp_unix || now - p.timestamp_unix > window {
+            continue;
+        }
+
+        let first_seen_miner = *miner_first_seen_unix
+            .get(&p.miner_id)
+            .unwrap_or(&p.timestamp_unix);
+        let miner_allow = now.saturating_sub(first_seen_miner) >= MIN_UPTIME_FOR_REWARDS_SEC;
+
+        let first_seen_node = *node_first_seen_unix
+            .get(&p.node_id)
+            .unwrap_or(&p.timestamp_unix);
+        let node_allow = now.saturating_sub(first_seen_node) >= MIN_UPTIME_FOR_REWARDS_SEC;
+
+        if miner_allow || node_allow {
             p.rewarded_block = Some(current_block);
         }
     }
+}
+
 
     pub async fn mining_stats(&self) -> MiningStats {
         let now = now_unix();
