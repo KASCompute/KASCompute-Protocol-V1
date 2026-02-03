@@ -279,6 +279,14 @@ pub struct MinerBalanceView {
     pub last_block_reward_nano: u64,
 }
 
+// Node rewards balance view (20% pool payouts)
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeBalanceView {
+    pub node_id: String,
+    pub total_mined_nano: u64,
+    pub last_block_reward_nano: u64,
+}
+
 // =========================
 // Debug / Demo
 // =========================

@@ -251,7 +251,7 @@ impl AppState {
     }
 
     // =========================================================================
-    // ComputeDAG: Task Lease Renew (unchanged)
+    // ComputeDAG: Task Lease Renew 
     // =========================================================================
 
     pub async fn renew_dag_task_lease(
@@ -557,6 +557,26 @@ impl AppState {
         out.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
         out
     }
+
+/// v1.1+: node balances (20% pool payouts) – keyed by coordinator node_id
+pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
+    let s = self.inner.read().await;
+
+    let mut out: Vec<NodeBalanceView> = s
+        .node_rewards
+        .keys()
+        .map(|node_id| NodeBalanceView {
+            node_id: node_id.clone(),
+            total_mined_nano: *s.node_rewards.get(node_id).unwrap_or(&0),
+            last_block_reward_nano: *s.node_last_block_reward.get(node_id).unwrap_or(&0),
+        })
+        .collect();
+
+    out.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
+    out
+}
+
+
 
     // =========================================================================
     // Heartbeats

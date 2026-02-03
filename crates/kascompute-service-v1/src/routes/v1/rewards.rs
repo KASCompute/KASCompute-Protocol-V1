@@ -4,7 +4,7 @@ use axum::{
     Router,
 };
 
-use crate::domain::models::{MinerBalanceView, RewardLedgerEntry, RewardView};
+use crate::domain::models::{MinerBalanceView, NodeBalanceView, RewardLedgerEntry, RewardView};
 use crate::state::AppState;
 use crate::util::resp::ok;
 
@@ -13,6 +13,7 @@ pub fn router() -> Router<AppState> {
         .route("/rewards/leaderboard", get(leaderboard))
         .route("/rewards/balances", get(balances))
         .route("/rewards/ledger/:miner_id", get(ledger))
+        .route("/rewards/nodes/balances", get(node_balances))
 }
 
 async fn leaderboard(State(state): State<AppState>) -> impl axum::response::IntoResponse {
@@ -30,5 +31,11 @@ async fn ledger(
     Path(miner_id): Path<String>,
 ) -> impl axum::response::IntoResponse {
     let v: Vec<RewardLedgerEntry> = state.rewards_ledger(&miner_id).await;
+    ok(v)
+}
+
+
+async fn node_balances(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    let v: Vec<NodeBalanceView> = state.rewards_nodes_balances().await;
     ok(v)
 }
