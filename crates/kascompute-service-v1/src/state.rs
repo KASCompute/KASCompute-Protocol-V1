@@ -94,8 +94,9 @@ pub struct InnerState {
     pub miner_first_seen_unix: HashMap<String, u64>,
     pub miner_last_seen_unix: HashMap<String, u64>,
 
-    /// v1.1: reward ledger entries per miner
+    /// v1.1: reward ledger entries per Miner/Node
     pub miner_ledger: HashMap<String, Vec<RewardLedgerEntry>>,
+    pub node_ledger: HashMap<String, Vec<NodeRewardLedgerEntry>>,
 
     // ------------------------------------------------------------------------
     // Demo mode
@@ -172,6 +173,7 @@ impl AppState {
             miner_first_seen_unix: HashMap::new(),
             miner_last_seen_unix: HashMap::new(),
             miner_ledger: HashMap::new(),
+	    node_ledger: HashMap::new(),
 
             demo_running: false,
 
@@ -541,6 +543,15 @@ impl AppState {
             .cloned()
             .unwrap_or_else(Vec::new)
     }
+
+pub async fn rewards_nodes_ledger(&self, node_id: &str) -> Vec<NodeRewardLedgerEntry> {
+    let s = self.inner.read().await;
+    s.node_ledger
+        .get(node_id)
+        .cloned()
+        .unwrap_or_else(Vec::new)
+}
+
 
     /// v1.1: balances (all)
     pub async fn rewards_balances(&self) -> Vec<MinerBalanceView> {
@@ -1459,18 +1470,32 @@ pub async fn mine_new_block(&self) {
         }
     }
 
-    // ✅ Pay nodes (20%) into legacy maps
-    if node_total_cu > 0 && node_pool_nano > 0 {
-        for (node_id, cu) in node_weight_map.iter() {
-            let amount = payout_from_pool(node_pool_nano, *cu, node_total_cu);
+// Pay nodes (20%) + ledger
+if node_total_cu > 0 && node_pool_nano > 0 {
+    for (node_id, cu) in node_weight_map.iter() {
+        let share = (*cu as f64) / (node_total_cu as f64);
+        let amount = payout_from_pool(node_pool_nano, *cu, node_total_cu);
 
-            *s.node_rewards.entry(node_id.clone()).or_insert(0) += amount;
-            s.node_last_block_reward.insert(node_id.clone(), amount);
+        *s.node_rewards.entry(node_id.clone()).or_insert(0) += amount;
+        s.node_last_block_reward.insert(node_id.clone(), amount);
 
-            // optional: ledger-like info for nodes (not required)
-            let _ = node_proof_counts.get(node_id);
-        }
+        let entry = NodeRewardLedgerEntry {
+            block_height: current_block,
+            timestamp_unix: now,
+            node_id: node_id.clone(),
+            amount_nano: amount,
+            share,
+            compute_units: *cu,
+            proofs_count: *node_proof_counts.get(node_id).unwrap_or(&0),
+            reason: "window_payout".to_string(),
+        };
+
+        s.node_ledger
+            .entry(node_id.clone())
+            .or_insert_with(Vec::new)
+            .push(entry);
     }
+}
 
     // mark proofs rewarded (prevents double count)
     for p in s.proofs.iter_mut() {

@@ -1,5 +1,3 @@
-// crates/domain/src/models.rs  (oder wo deine models.rs liegt)
-
 use serde::{Deserialize, Serialize};
 
 // =========================
@@ -245,7 +243,7 @@ pub struct RewardView {
 }
 
 // =========================
-// Rewards / Ledger (v1.1)
+// Miner Rewards / Ledger (v1.1)
 // =========================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +264,34 @@ pub struct RewardLedgerEntry {
     pub compute_units: u64,
 
     /// How many proofs contributed for this miner in the block window
+    pub proofs_count: usize,
+
+    /// Free text ("window_payout", etc.)
+    pub reason: String,
+}
+
+// =========================
+// Node Rewards / Ledger (v1.1+)
+// =========================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeRewardLedgerEntry {
+    pub block_height: u64,
+    pub timestamp_unix: u64,
+
+    /// Coordinator node receiving rewards (20% pool)
+    pub node_id: String,
+
+    /// Amount credited for this block (nanoKCT)
+    pub amount_nano: u64,
+
+    /// Share in this block (0..1)
+    pub share: f64,
+
+    /// Accounting weight used (v1.1: sum of compute_units in window)
+    pub compute_units: u64,
+
+    /// How many proofs contributed for this node in the block window
     pub proofs_count: usize,
 
     /// Free text ("window_payout", etc.)
