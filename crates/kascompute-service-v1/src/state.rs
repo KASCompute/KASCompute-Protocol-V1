@@ -546,10 +546,19 @@ impl AppState {
 
 pub async fn rewards_nodes_ledger(&self, node_id: &str) -> Vec<NodeRewardLedgerEntry> {
     let s = self.inner.read().await;
-    s.node_ledger
+
+    // Optional: nur erlauben, wenn node_id wirklich node-role hat
+    let is_node = s
+        .nodes
         .get(node_id)
-        .cloned()
-        .unwrap_or_else(Vec::new)
+        .map(|n| n.roles.iter().any(|r| r == "node"))
+        .unwrap_or(false);
+
+    if !is_node {
+        return Vec::new();
+    }
+
+    s.node_ledger.get(node_id).cloned().unwrap_or_else(Vec::new)
 }
 
 
@@ -573,20 +582,29 @@ pub async fn rewards_nodes_ledger(&self, node_id: &str) -> Vec<NodeRewardLedgerE
 pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
     let s = self.inner.read().await;
 
-    let mut out: Vec<NodeBalanceView> = s
-        .node_rewards
-        .keys()
+    // Nur IDs, die aktuell als "node" role existieren
+    let mut node_ids: Vec<String> = s
+        .nodes
+        .values()
+        .filter(|n| n.roles.iter().any(|r| r == "node"))
+        .map(|n| n.node_id.clone())
+        .collect();
+
+    node_ids.sort();
+    node_ids.dedup();
+
+    let mut out: Vec<NodeBalanceView> = node_ids
+        .into_iter()
         .map(|node_id| NodeBalanceView {
             node_id: node_id.clone(),
-            total_mined_nano: *s.node_rewards.get(node_id).unwrap_or(&0),
-            last_block_reward_nano: *s.node_last_block_reward.get(node_id).unwrap_or(&0),
+            total_mined_nano: *s.node_rewards.get(&node_id).unwrap_or(&0),
+            last_block_reward_nano: *s.node_last_block_reward.get(&node_id).unwrap_or(&0),
         })
         .collect();
 
     out.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
     out
 }
-
 
 
     // =========================================================================
