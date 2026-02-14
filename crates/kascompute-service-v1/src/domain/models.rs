@@ -28,7 +28,19 @@ pub struct Node {
     pub roles: Vec<String>,              // ["node","miner"]
     pub compute_profile: Option<String>, // legacy compatibility
     pub client_version: Option<String>,
+
+    // --- Split fields (mainnet-ready) ---
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_profile_node: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_profile_miner: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version_node: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version_miner: Option<String>,
 }
+
 
 #[derive(Debug, Deserialize)]
 pub struct HeartbeatPayload {

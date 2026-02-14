@@ -160,11 +160,14 @@ struct NextJobData {
     job: Option<JobLease>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct JobLease {
     id: u64,
     work_units: u64,
+    #[serde(default)]
+    lease_expires_unix: u64,
 }
+
 
 #[derive(Debug, Serialize)]
 struct NextJobRequestV1 {
@@ -329,7 +332,7 @@ fn next_job_v1(client: &Client, api_base: &str, node_id: &str) -> Result<Option<
         .json()
         .context("Failed to decode /v1/jobs/next response")?;
 
-    // Use server timestamp to avoid dead_code warning and aid debugging
+    // Server timestamp (debug)
     println!("[NODE {}] next_job server ts={}", node_id, body.ts);
 
     if body.status != "ok" {
@@ -341,8 +344,23 @@ fn next_job_v1(client: &Client, api_base: &str, node_id: &str) -> Result<Option<
         return Ok(None);
     }
 
-    Ok(body.data.and_then(|d| d.job))
+    // Extract lease
+    let lease = body.data.and_then(|d| d.job);
+
+    // Job distribution log (only when a job is actually leased)
+    if let Some(j) = &lease {
+        println!(
+            "[NODE {}] DISTRIBUTED job #{} → lease_expires_unix={} wu={}",
+            node_id, j.id, j.lease_expires_unix, j.work_units
+        );
+    } else {
+        // Optional: keep it minimal (comment out if too noisy)
+        // println!("[NODE {}] next_job: none", node_id);
+    }
+
+    Ok(lease)
 }
+
 
 
 fn submit_proof_v1(

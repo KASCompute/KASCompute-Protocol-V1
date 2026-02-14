@@ -173,7 +173,7 @@ impl AppState {
             miner_first_seen_unix: HashMap::new(),
             miner_last_seen_unix: HashMap::new(),
             miner_ledger: HashMap::new(),
-	    node_ledger: HashMap::new(),
+            node_ledger: HashMap::new(),
 
             demo_running: false,
 
@@ -253,7 +253,7 @@ impl AppState {
     }
 
     // =========================================================================
-    // ComputeDAG: Task Lease Renew 
+    // ComputeDAG: Task Lease Renew
     // =========================================================================
 
     pub async fn renew_dag_task_lease(
@@ -324,6 +324,12 @@ impl AppState {
                     roles: vec!["node".to_string(), "miner".to_string()],
                     compute_profile: Some("sim".to_string()),
                     client_version: Some("demo".to_string()),
+
+                    // split fields
+                    compute_profile_node: Some("sim".to_string()),
+                    compute_profile_miner: Some("sim".to_string()),
+                    client_version_node: Some("demo".to_string()),
+                    client_version_miner: Some("demo".to_string()),
                 },
             );
 
@@ -544,23 +550,22 @@ impl AppState {
             .unwrap_or_else(Vec::new)
     }
 
-pub async fn rewards_nodes_ledger(&self, node_id: &str) -> Vec<NodeRewardLedgerEntry> {
-    let s = self.inner.read().await;
+    pub async fn rewards_nodes_ledger(&self, node_id: &str) -> Vec<NodeRewardLedgerEntry> {
+        let s = self.inner.read().await;
 
-    // Optional: nur erlauben, wenn node_id wirklich node-role hat
-    let is_node = s
-        .nodes
-        .get(node_id)
-        .map(|n| n.roles.iter().any(|r| r == "node"))
-        .unwrap_or(false);
+        // Optional: nur erlauben, wenn node_id wirklich node-role hat
+        let is_node = s
+            .nodes
+            .get(node_id)
+            .map(|n| n.roles.iter().any(|r| r == "node"))
+            .unwrap_or(false);
 
-    if !is_node {
-        return Vec::new();
+        if !is_node {
+            return Vec::new();
+        }
+
+        s.node_ledger.get(node_id).cloned().unwrap_or_else(Vec::new)
     }
-
-    s.node_ledger.get(node_id).cloned().unwrap_or_else(Vec::new)
-}
-
 
     /// v1.1: balances (all)
     pub async fn rewards_balances(&self) -> Vec<MinerBalanceView> {
@@ -578,34 +583,33 @@ pub async fn rewards_nodes_ledger(&self, node_id: &str) -> Vec<NodeRewardLedgerE
         out
     }
 
-/// v1.1+: node balances (20% pool payouts) – keyed by coordinator node_id
-pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
-    let s = self.inner.read().await;
+    /// v1.1+: node balances (20% pool payouts) – keyed by coordinator node_id
+    pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
+        let s = self.inner.read().await;
 
-    // Nur IDs, die aktuell als "node" role existieren
-    let mut node_ids: Vec<String> = s
-        .nodes
-        .values()
-        .filter(|n| n.roles.iter().any(|r| r == "node"))
-        .map(|n| n.node_id.clone())
-        .collect();
+        // Nur IDs, die aktuell als "node" role existieren
+        let mut node_ids: Vec<String> = s
+            .nodes
+            .values()
+            .filter(|n| n.roles.iter().any(|r| r == "node"))
+            .map(|n| n.node_id.clone())
+            .collect();
 
-    node_ids.sort();
-    node_ids.dedup();
+        node_ids.sort();
+        node_ids.dedup();
 
-    let mut out: Vec<NodeBalanceView> = node_ids
-        .into_iter()
-        .map(|node_id| NodeBalanceView {
-            node_id: node_id.clone(),
-            total_mined_nano: *s.node_rewards.get(&node_id).unwrap_or(&0),
-            last_block_reward_nano: *s.node_last_block_reward.get(&node_id).unwrap_or(&0),
-        })
-        .collect();
+        let mut out: Vec<NodeBalanceView> = node_ids
+            .into_iter()
+            .map(|node_id| NodeBalanceView {
+                node_id: node_id.clone(),
+                total_mined_nano: *s.node_rewards.get(&node_id).unwrap_or(&0),
+                last_block_reward_nano: *s.node_last_block_reward.get(&node_id).unwrap_or(&0),
+            })
+            .collect();
 
-    out.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
-    out
-}
-
+        out.sort_by(|a, b| b.total_mined_nano.cmp(&a.total_mined_nano));
+        out
+    }
 
     // =========================================================================
     // Heartbeats
@@ -653,9 +657,18 @@ pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
                 latitude: payload.latitude,
                 longitude: payload.longitude,
                 country: payload.country.clone(),
+
                 roles: roles.clone(),
+
+                // legacy
                 compute_profile: payload.compute_profile.clone(),
                 client_version: payload.client_version.clone(),
+
+                // split fields
+                compute_profile_node: if is_node { payload.compute_profile.clone() } else { None },
+                compute_profile_miner: if is_miner { payload.compute_profile.clone() } else { None },
+                client_version_node: if is_node { payload.client_version.clone() } else { None },
+                client_version_miner: if is_miner { payload.client_version.clone() } else { None },
             });
 
             // global last seen
@@ -670,9 +683,49 @@ pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
             }
 
             entry.public_key_hex = payload.public_key_hex.clone();
-            entry.roles = roles;
-            entry.compute_profile = payload.compute_profile.clone();
-            entry.client_version = payload.client_version.clone();
+
+            // roles MERGE (never overwrite)
+            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for r in entry.roles.iter() {
+                set.insert(r.to_lowercase());
+            }
+            for r in roles.iter() {
+                set.insert(r.to_lowercase());
+            }
+            entry.roles = set.into_iter().collect();
+
+            // ---- Split updates (role gated) ----
+            if is_node {
+                if payload.client_version.is_some() {
+                    entry.client_version_node = payload.client_version.clone();
+                }
+                if payload.compute_profile.is_some() {
+                    entry.compute_profile_node = payload.compute_profile.clone();
+                }
+
+                // legacy mirror = node side (prevents miner override bug)
+                if entry.client_version_node.is_some() {
+                    entry.client_version = entry.client_version_node.clone();
+                } else if payload.client_version.is_some() {
+                    entry.client_version = payload.client_version.clone();
+                }
+
+                if entry.compute_profile_node.is_some() {
+                    entry.compute_profile = entry.compute_profile_node.clone();
+                } else if payload.compute_profile.is_some() {
+                    entry.compute_profile = payload.compute_profile.clone();
+                }
+            }
+
+            if is_miner {
+                if payload.client_version.is_some() {
+                    entry.client_version_miner = payload.client_version.clone();
+                }
+                if payload.compute_profile.is_some() {
+                    entry.compute_profile_miner = payload.compute_profile.clone();
+                }
+                // IMPORTANT: miner must never override legacy fields
+            }
 
             if payload.latitude.is_some() {
                 entry.latitude = payload.latitude;
@@ -788,163 +841,179 @@ pub async fn rewards_nodes_balances(&self) -> Vec<NodeBalanceView> {
     // Proof Submit + Signature Verification
     // =========================================================================
 
-pub async fn complete_job(
-    &self,
-    job_id: u64,
-    proof: ProofSubmitRequest,
-) -> Result<ProofRecord, &'static str> {
-    let ts = now_unix();
-    let mut s = self.inner.write().await;
+    pub async fn complete_job(
+        &self,
+        job_id: u64,
+        proof: ProofSubmitRequest,
+    ) -> Result<ProofRecord, &'static str> {
+        let ts = now_unix();
+        let mut s = self.inner.write().await;
 
-    Self::expire_leases_locked(&mut s, ts);
+        Self::expire_leases_locked(&mut s, ts);
 
-    let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
-    if !matches!(job.status, JobStatus::Running) {
-        return Err("job_not_running");
-    }
+        let job = s.jobs.get_mut(&job_id).ok_or("job_not_found")?;
+        if !matches!(job.status, JobStatus::Running) {
+            return Err("job_not_running");
+        }
 
+        if job.assigned_node.as_ref() != Some(&proof.node_id) {
+            return Err("job_wrong_node");
+        }
 
-    if job.assigned_node.as_ref() != Some(&proof.node_id) {
-        return Err("job_wrong_node");
-    }
+        job.status = JobStatus::Completed;
+        job.updated_unix = ts;
+        job.completed_unix = Some(ts);
 
-    job.status = JobStatus::Completed;
-    job.updated_unix = ts;
-    job.completed_unix = Some(ts);
+        let mode = proof
+            .workload_mode
+            .clone()
+            .unwrap_or_else(|| "sim".to_string());
+        let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
+            if let Some(a) = job.assigned_unix {
+                (ts.saturating_sub(a)) * 1000
+            } else {
+                0
+            }
+        });
 
-    let mode = proof.workload_mode.clone().unwrap_or_else(|| "sim".to_string());
-    let elapsed_ms = proof.elapsed_ms.unwrap_or_else(|| {
-        if let Some(a) = job.assigned_unix {
-            (ts.saturating_sub(a)) * 1000
+        // coordinator = lease owner
+        let coordinator_id = proof.node_id.clone();
+
+        // worker identity
+        let miner_id_opt = proof.miner_id.clone(); // Option<String>
+        let miner_id_for_record = miner_id_opt
+            .clone()
+            .unwrap_or_else(|| coordinator_id.clone());
+
+        // signature timestamp
+        let ts_msg = proof.timestamp_unix.unwrap_or(ts);
+
+        // v1 signature verify
+        let mut sig_ok = false;
+
+        // Optional hardening: timestamp drift
+        if let Some(ts_sent) = proof.timestamp_unix {
+            if ts.abs_diff(ts_sent) > 60 {
+                // keep sig_ok false
+            }
+        }
+
+        // Wer hat signiert?
+        // - wenn miner_id vorhanden: miner signiert
+        // - sonst legacy: coordinator signiert
+        let signer_lookup_id = miner_id_opt.as_deref().unwrap_or(&coordinator_id);
+
+        // Pubkey auflösen:
+        // 1) proof.public_key_hex (falls Miner mitsendet)
+        // 2) nodes[signer_lookup_id] (miner heartbeat)
+        // 3) nodes[coordinator_id] (legacy)
+        let pubkey_hex_opt = proof
+            .public_key_hex
+            .clone()
+            .or_else(|| s.nodes.get(signer_lookup_id).map(|n| n.public_key_hex.clone()))
+            .or_else(|| s.nodes.get(&coordinator_id).map(|n| n.public_key_hex.clone()));
+
+        if let (Some(sig_hex), Some(pubkey_hex)) = (proof.signature_hex.clone(), pubkey_hex_opt) {
+            let payload = ProofPayloadV1 {
+                node_id: coordinator_id.clone(),
+                miner_id: miner_id_opt.clone(),
+                job_id,
+                work_units: proof.work_units,
+                workload_mode: mode.clone(),
+                elapsed_ms,
+                client_version: proof
+                    .client_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                ts: ts_msg,
+            };
+
+            sig_ok = verify_proof_signature_v1(&pubkey_hex, &sig_hex, &payload);
+
+            // legacy fallback nur wenn miner_id NICHT vorhanden
+            if !sig_ok && miner_id_opt.is_none() {
+                let legacy_msg = format!(
+                    "pf|{}|{}|{}|{}",
+                    coordinator_id, job_id, proof.work_units, ts_msg
+                );
+                sig_ok = verify_ed25519_signature_hex(&pubkey_hex, &sig_hex, &legacy_msg);
+            }
+        }
+
+        if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
+            return Err("invalid_signature");
+        }
+
+        let effective_wu = if sig_ok {
+            (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
         } else {
-            0
-        }
-    });
-
-    // coordinator = lease owner
-    let coordinator_id = proof.node_id.clone();
-
-    // worker identity
-    let miner_id_opt = proof.miner_id.clone(); // Option<String>
-    let miner_id_for_record = miner_id_opt.clone().unwrap_or_else(|| coordinator_id.clone());
-
-    // signature timestamp
-    let ts_msg = proof.timestamp_unix.unwrap_or(ts);
-
-    // v1 signature verify
-    let mut sig_ok = false;
-
-    // Optional hardening: timestamp drift
-    if let Some(ts_sent) = proof.timestamp_unix {
-        if ts.abs_diff(ts_sent) > 60 {
-            // keep sig_ok false
-        }
-    }
-
-    // Wer hat signiert?
-    // - wenn miner_id vorhanden: miner signiert
-    // - sonst legacy: coordinator signiert
-    let signer_lookup_id = miner_id_opt.as_deref().unwrap_or(&coordinator_id);
-
-    // Pubkey auflösen:
-    // 1) proof.public_key_hex (falls Miner mitsendet)
-    // 2) nodes[signer_lookup_id] (miner heartbeat)
-    // 3) nodes[coordinator_id] (legacy)
-    let pubkey_hex_opt = proof
-        .public_key_hex
-        .clone()
-        .or_else(|| s.nodes.get(signer_lookup_id).map(|n| n.public_key_hex.clone()))
-        .or_else(|| s.nodes.get(&coordinator_id).map(|n| n.public_key_hex.clone()));
-
-    if let (Some(sig_hex), Some(pubkey_hex)) = (proof.signature_hex.clone(), pubkey_hex_opt) {
-
-        let payload = ProofPayloadV1 {
-            node_id: coordinator_id.clone(),
-            miner_id: miner_id_opt.clone(),
-            job_id,
-            work_units: proof.work_units,
-            workload_mode: mode.clone(),
-            elapsed_ms,
-            client_version: proof.client_version.clone().unwrap_or_else(|| "unknown".to_string()),
-            ts: ts_msg,
+            proof.work_units
         };
 
-        sig_ok = verify_proof_signature_v1(&pubkey_hex, &sig_hex, &payload);
+        let compute_units = effective_wu;
+        let receipt = make_receipt(&coordinator_id, job_id, ts, proof.work_units);
 
-        // legacy fallback nur wenn miner_id NICHT vorhanden
-        if !sig_ok && miner_id_opt.is_none() {
-            let legacy_msg = format!(
-                "pf|{}|{}|{}|{}",
-                coordinator_id, job_id, proof.work_units, ts_msg
-            );
-            sig_ok = verify_ed25519_signature_hex(&pubkey_hex, &sig_hex, &legacy_msg);
+        let record = ProofRecord {
+            node_id: coordinator_id.clone(),
+            miner_id: miner_id_for_record.clone(),
+
+            job_id,
+            work_units: proof.work_units,
+            effective_work_units: effective_wu,
+
+            compute_units,
+            rewarded_block: None,
+
+            timestamp_unix: ts,
+            workload_mode: mode,
+            elapsed_ms,
+            result_hash: proof.result_hash.clone(),
+            client_version: proof.client_version.clone(),
+            receipt,
+            signature_verified: sig_ok,
+        };
+
+        s.proofs.push(record.clone());
+
+        // legacy counters (by coordinator)
+        *s.node_cumulative_work
+            .entry(coordinator_id.clone())
+            .or_insert(0) += proof.work_units;
+
+        let st = s.node_stats.entry(coordinator_id.clone()).or_insert(NodeStats {
+            node_id: coordinator_id.clone(),
+            first_seen_unix: ts,
+            last_seen_unix: ts,
+            total_effective_work_units: 0,
+            verified_work_units: 0,
+        });
+
+        st.last_seen_unix = ts;
+        st.total_effective_work_units += effective_wu;
+        if sig_ok {
+            st.verified_work_units += proof.work_units;
         }
+
+        // v1.1 miner stats
+        s.miner_rewards.entry(miner_id_for_record.clone()).or_insert(0);
+        s.miner_last_block_reward
+            .entry(miner_id_for_record.clone())
+            .or_insert(0);
+        *s.miner_cumulative_compute_units
+            .entry(miner_id_for_record.clone())
+            .or_insert(0) += compute_units;
+
+        s.miner_first_seen_unix
+            .entry(miner_id_for_record.clone())
+            .or_insert(ts);
+        s.miner_last_seen_unix
+            .insert(miner_id_for_record.clone(), ts);
+        s.miner_ledger
+            .entry(miner_id_for_record)
+            .or_insert_with(Vec::new);
+
+        Ok(record)
     }
-
-    if proof.client_version.as_deref() == Some("protocol-v1") && !sig_ok {
-        return Err("invalid_signature");
-    }
-
-    let effective_wu = if sig_ok {
-        (proof.work_units as f64 * VERIFIED_BONUS_MULT) as u64
-    } else {
-        proof.work_units
-    };
-
-    let compute_units = effective_wu;
-    let receipt = make_receipt(&coordinator_id, job_id, ts, proof.work_units);
-
-    let record = ProofRecord {
-        node_id: coordinator_id.clone(),
-        miner_id: miner_id_for_record.clone(),
-
-        job_id,
-        work_units: proof.work_units,
-        effective_work_units: effective_wu,
-
-        compute_units,
-        rewarded_block: None,
-
-        timestamp_unix: ts,
-        workload_mode: mode,
-        elapsed_ms,
-        result_hash: proof.result_hash.clone(),
-        client_version: proof.client_version.clone(),
-        receipt,
-        signature_verified: sig_ok,
-    };
-
-    s.proofs.push(record.clone());
-
-    // legacy counters (by coordinator)
-    *s.node_cumulative_work.entry(coordinator_id.clone()).or_insert(0) += proof.work_units;
-
-    let st = s.node_stats.entry(coordinator_id.clone()).or_insert(NodeStats {
-        node_id: coordinator_id.clone(),
-        first_seen_unix: ts,
-        last_seen_unix: ts,
-        total_effective_work_units: 0,
-        verified_work_units: 0,
-    });
-
-    st.last_seen_unix = ts;
-    st.total_effective_work_units += effective_wu;
-    if sig_ok {
-        st.verified_work_units += proof.work_units;
-    }
-
-    // v1.1 miner stats
-    s.miner_rewards.entry(miner_id_for_record.clone()).or_insert(0);
-    s.miner_last_block_reward.entry(miner_id_for_record.clone()).or_insert(0);
-    *s.miner_cumulative_compute_units.entry(miner_id_for_record.clone()).or_insert(0) += compute_units;
-
-    s.miner_first_seen_unix.entry(miner_id_for_record.clone()).or_insert(ts);
-    s.miner_last_seen_unix.insert(miner_id_for_record.clone(), ts);
-    s.miner_ledger.entry(miner_id_for_record).or_insert_with(Vec::new);
-
-    Ok(record)
-}
-
 
     // =========================================================================
     // ComputeDAG: Spec Registry
@@ -1257,11 +1326,7 @@ pub async fn complete_job(
         }
     }
 
-    pub async fn assign_next_dag_task(
-        &self,
-        run_id: &str,
-        node_id: &str,
-    ) -> Option<DagTaskLease> {
+    pub async fn assign_next_dag_task(&self, run_id: &str, node_id: &str) -> Option<DagTaskLease> {
         let now = now_unix();
         let mut s = self.inner.write().await;
 
@@ -1370,176 +1435,175 @@ pub async fn complete_job(
         (kct * (NANO as f64)) as u64
     }
 
-pub async fn mine_new_block(&self) {
-    let now = now_unix();
-    let mut s = self.inner.write().await;
+    pub async fn mine_new_block(&self) {
+        let now = now_unix();
+        let mut s = self.inner.write().await;
 
-    Self::expire_leases_locked(&mut s, now);
+        Self::expire_leases_locked(&mut s, now);
 
-    s.block_height += 1;
-    let current_block = s.block_height;
+        s.block_height += 1;
+        let current_block = s.block_height;
 
-    let months = months_since(s.genesis_time, now);
-    let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
-    let reward_nano = Self::kct_to_nano(reward_kct);
+        let months = months_since(s.genesis_time, now);
+        let reward_kct = START_REWARD_KCT * MONTHLY_DECAY.powf(months as f64);
+        let reward_nano = Self::kct_to_nano(reward_kct);
 
-    // ✅ Split 80/20 (integer-safe)
-    let miner_pool_nano: u64 =
-        ((reward_nano as u128) * (MINER_REWARD_PCT as u128) / 100u128) as u64;
-    let node_pool_nano: u64 = reward_nano.saturating_sub(miner_pool_nano);
+        // ✅ Split 80/20 (integer-safe)
+        let miner_pool_nano: u64 =
+            ((reward_nano as u128) * (MINER_REWARD_PCT as u128) / 100u128) as u64;
+        let node_pool_nano: u64 = reward_nano.saturating_sub(miner_pool_nano);
 
-    // Clone needed maps BEFORE iterating to avoid borrow conflicts
-    let miner_first_seen_unix = s.miner_first_seen_unix.clone();
+        // Clone needed maps BEFORE iterating to avoid borrow conflicts
+        let miner_first_seen_unix = s.miner_first_seen_unix.clone();
 
-    // For node uptime gate (coordinator): use node_stats.first_seen_unix
-    let node_first_seen_unix: HashMap<String, u64> = s
-        .node_stats
-        .iter()
-        .map(|(id, st)| (id.clone(), st.first_seen_unix))
-        .collect();
+        // For node uptime gate (coordinator): use node_stats.first_seen_unix
+        let node_first_seen_unix: HashMap<String, u64> = s
+            .node_stats
+            .iter()
+            .map(|(id, st)| (id.clone(), st.first_seen_unix))
+            .collect();
 
-    // Build weight maps over last window, only for proofs not yet rewarded
-    let window = REWARD_WINDOW_SEC;
+        // Build weight maps over last window, only for proofs not yet rewarded
+        let window = REWARD_WINDOW_SEC;
 
-    let mut miner_weight_map: HashMap<String, u64> = HashMap::new();
-    let mut miner_proof_counts: HashMap<String, usize> = HashMap::new();
+        let mut miner_weight_map: HashMap<String, u64> = HashMap::new();
+        let mut miner_proof_counts: HashMap<String, usize> = HashMap::new();
 
-    let mut node_weight_map: HashMap<String, u64> = HashMap::new();
-    let mut node_proof_counts: HashMap<String, usize> = HashMap::new();
+        let mut node_weight_map: HashMap<String, u64> = HashMap::new();
+        let mut node_proof_counts: HashMap<String, usize> = HashMap::new();
 
-    for p in s.proofs.iter() {
-        if p.rewarded_block.is_some() {
-            continue;
+        for p in s.proofs.iter() {
+            if p.rewarded_block.is_some() {
+                continue;
+            }
+            if now < p.timestamp_unix || now - p.timestamp_unix > window {
+                continue;
+            }
+
+            // ----- Miner uptime gate
+            let first_seen_miner = *miner_first_seen_unix
+                .get(&p.miner_id)
+                .unwrap_or(&p.timestamp_unix);
+
+            let miner_allow = now.saturating_sub(first_seen_miner) >= MIN_UPTIME_FOR_REWARDS_SEC;
+            if miner_allow {
+                *miner_weight_map.entry(p.miner_id.clone()).or_insert(0) += p.compute_units;
+                *miner_proof_counts.entry(p.miner_id.clone()).or_insert(0) += 1;
+            }
+
+            // ----- Node uptime gate (coordinator)
+            let first_seen_node = *node_first_seen_unix
+                .get(&p.node_id)
+                .unwrap_or(&p.timestamp_unix);
+
+            let node_allow = now.saturating_sub(first_seen_node) >= MIN_UPTIME_FOR_REWARDS_SEC;
+            if node_allow {
+                *node_weight_map.entry(p.node_id.clone()).or_insert(0) += p.compute_units;
+                *node_proof_counts.entry(p.node_id.clone()).or_insert(0) += 1;
+            }
         }
-        if now < p.timestamp_unix || now - p.timestamp_unix > window {
-            continue;
+
+        let miner_total_cu: u64 = miner_weight_map.values().sum();
+        let node_total_cu: u64 = node_weight_map.values().sum();
+
+        // reset last block rewards
+        s.miner_last_block_reward.clear();
+        s.node_last_block_reward.clear();
+
+        // For testnet: keep emission monotonic (full reward counts as emitted)
+        s.total_emitted_nano = s.total_emitted_nano.saturating_add(reward_nano);
+
+        // If nobody eligible
+        if miner_total_cu == 0 && node_total_cu == 0 {
+            return;
         }
 
-        // ----- Miner uptime gate
-        let first_seen_miner = *miner_first_seen_unix
-            .get(&p.miner_id)
-            .unwrap_or(&p.timestamp_unix);
-
-        let miner_allow = now.saturating_sub(first_seen_miner) >= MIN_UPTIME_FOR_REWARDS_SEC;
-        if miner_allow {
-            *miner_weight_map.entry(p.miner_id.clone()).or_insert(0) += p.compute_units;
-            *miner_proof_counts.entry(p.miner_id.clone()).or_insert(0) += 1;
-        }
-
-        // ----- Node uptime gate (coordinator)
-        let first_seen_node = *node_first_seen_unix
-            .get(&p.node_id)
-            .unwrap_or(&p.timestamp_unix);
-
-        let node_allow = now.saturating_sub(first_seen_node) >= MIN_UPTIME_FOR_REWARDS_SEC;
-        if node_allow {
-            *node_weight_map.entry(p.node_id.clone()).or_insert(0) += p.compute_units;
-            *node_proof_counts.entry(p.node_id.clone()).or_insert(0) += 1;
-        }
-    }
-
-    let miner_total_cu: u64 = miner_weight_map.values().sum();
-    let node_total_cu: u64 = node_weight_map.values().sum();
-
-    // reset last block rewards
-    s.miner_last_block_reward.clear();
-    s.node_last_block_reward.clear();
-
-    // For testnet: keep emission monotonic (full reward counts as emitted)
-    s.total_emitted_nano = s.total_emitted_nano.saturating_add(reward_nano);
-
-    // If nobody eligible
-    if miner_total_cu == 0 && node_total_cu == 0 {
-        return;
-    }
-
-    // helper payout
-    let payout_from_pool = |pool_nano: u64, part_cu: u64, total_cu: u64| -> u64 {
-        if pool_nano == 0 || total_cu == 0 {
-            return 0;
-        }
-        ((pool_nano as u128) * (part_cu as u128) / (total_cu as u128)) as u64
-    };
-
-    // ✅ Pay miners (80%) + ledger
-    if miner_total_cu > 0 && miner_pool_nano > 0 {
-        for (miner_id, cu) in miner_weight_map.iter() {
-            let share = (*cu as f64) / (miner_total_cu as f64);
-            let amount = payout_from_pool(miner_pool_nano, *cu, miner_total_cu);
-
-            *s.miner_rewards.entry(miner_id.clone()).or_insert(0) += amount;
-            s.miner_last_block_reward.insert(miner_id.clone(), amount);
-
-            let entry = RewardLedgerEntry {
-                block_height: current_block,
-                timestamp_unix: now,
-                miner_id: miner_id.clone(),
-                amount_nano: amount,
-                share,
-                compute_units: *cu,
-                proofs_count: *miner_proof_counts.get(miner_id).unwrap_or(&0),
-                reason: "window_payout".to_string(),
-            };
-
-            s.miner_ledger
-                .entry(miner_id.clone())
-                .or_insert_with(Vec::new)
-                .push(entry);
-        }
-    }
-
-// Pay nodes (20%) + ledger
-if node_total_cu > 0 && node_pool_nano > 0 {
-    for (node_id, cu) in node_weight_map.iter() {
-        let share = (*cu as f64) / (node_total_cu as f64);
-        let amount = payout_from_pool(node_pool_nano, *cu, node_total_cu);
-
-        *s.node_rewards.entry(node_id.clone()).or_insert(0) += amount;
-        s.node_last_block_reward.insert(node_id.clone(), amount);
-
-        let entry = NodeRewardLedgerEntry {
-            block_height: current_block,
-            timestamp_unix: now,
-            node_id: node_id.clone(),
-            amount_nano: amount,
-            share,
-            compute_units: *cu,
-            proofs_count: *node_proof_counts.get(node_id).unwrap_or(&0),
-            reason: "window_payout".to_string(),
+        // helper payout
+        let payout_from_pool = |pool_nano: u64, part_cu: u64, total_cu: u64| -> u64 {
+            if pool_nano == 0 || total_cu == 0 {
+                return 0;
+            }
+            ((pool_nano as u128) * (part_cu as u128) / (total_cu as u128)) as u64
         };
 
-        s.node_ledger
-            .entry(node_id.clone())
-            .or_insert_with(Vec::new)
-            .push(entry);
+        // ✅ Pay miners (80%) + ledger
+        if miner_total_cu > 0 && miner_pool_nano > 0 {
+            for (miner_id, cu) in miner_weight_map.iter() {
+                let share = (*cu as f64) / (miner_total_cu as f64);
+                let amount = payout_from_pool(miner_pool_nano, *cu, miner_total_cu);
+
+                *s.miner_rewards.entry(miner_id.clone()).or_insert(0) += amount;
+                s.miner_last_block_reward.insert(miner_id.clone(), amount);
+
+                let entry = RewardLedgerEntry {
+                    block_height: current_block,
+                    timestamp_unix: now,
+                    miner_id: miner_id.clone(),
+                    amount_nano: amount,
+                    share,
+                    compute_units: *cu,
+                    proofs_count: *miner_proof_counts.get(miner_id).unwrap_or(&0),
+                    reason: "window_payout".to_string(),
+                };
+
+                s.miner_ledger
+                    .entry(miner_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(entry);
+            }
+        }
+
+        // Pay nodes (20%) + ledger
+        if node_total_cu > 0 && node_pool_nano > 0 {
+            for (node_id, cu) in node_weight_map.iter() {
+                let share = (*cu as f64) / (node_total_cu as f64);
+                let amount = payout_from_pool(node_pool_nano, *cu, node_total_cu);
+
+                *s.node_rewards.entry(node_id.clone()).or_insert(0) += amount;
+                s.node_last_block_reward.insert(node_id.clone(), amount);
+
+                let entry = NodeRewardLedgerEntry {
+                    block_height: current_block,
+                    timestamp_unix: now,
+                    node_id: node_id.clone(),
+                    amount_nano: amount,
+                    share,
+                    compute_units: *cu,
+                    proofs_count: *node_proof_counts.get(node_id).unwrap_or(&0),
+                    reason: "window_payout".to_string(),
+                };
+
+                s.node_ledger
+                    .entry(node_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(entry);
+            }
+        }
+
+        // mark proofs rewarded (prevents double count)
+        for p in s.proofs.iter_mut() {
+            if p.rewarded_block.is_some() {
+                continue;
+            }
+            if now < p.timestamp_unix || now - p.timestamp_unix > window {
+                continue;
+            }
+
+            let first_seen_miner = *miner_first_seen_unix
+                .get(&p.miner_id)
+                .unwrap_or(&p.timestamp_unix);
+            let miner_allow = now.saturating_sub(first_seen_miner) >= MIN_UPTIME_FOR_REWARDS_SEC;
+
+            let first_seen_node = *node_first_seen_unix
+                .get(&p.node_id)
+                .unwrap_or(&p.timestamp_unix);
+            let node_allow = now.saturating_sub(first_seen_node) >= MIN_UPTIME_FOR_REWARDS_SEC;
+
+            if miner_allow || node_allow {
+                p.rewarded_block = Some(current_block);
+            }
+        }
     }
-}
-
-    // mark proofs rewarded (prevents double count)
-    for p in s.proofs.iter_mut() {
-        if p.rewarded_block.is_some() {
-            continue;
-        }
-        if now < p.timestamp_unix || now - p.timestamp_unix > window {
-            continue;
-        }
-
-        let first_seen_miner = *miner_first_seen_unix
-            .get(&p.miner_id)
-            .unwrap_or(&p.timestamp_unix);
-        let miner_allow = now.saturating_sub(first_seen_miner) >= MIN_UPTIME_FOR_REWARDS_SEC;
-
-        let first_seen_node = *node_first_seen_unix
-            .get(&p.node_id)
-            .unwrap_or(&p.timestamp_unix);
-        let node_allow = now.saturating_sub(first_seen_node) >= MIN_UPTIME_FOR_REWARDS_SEC;
-
-        if miner_allow || node_allow {
-            p.rewarded_block = Some(current_block);
-        }
-    }
-}
-
 
     pub async fn mining_stats(&self) -> MiningStats {
         let now = now_unix();
